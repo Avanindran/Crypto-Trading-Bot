@@ -210,6 +210,76 @@ def load_prices_and_volumes_all_parallel(
     return prices, volumes
 
 
+def load_klines_all_parallel(
+    symbols: List[str],
+    months: List[Tuple[int, int]],
+    max_workers: int = 6,
+) -> Tuple[
+    Dict[str, Dict[int, float]],  # close (col 4)
+    Dict[str, Dict[int, float]],  # base_vol (col 5)
+    Dict[str, Dict[int, float]],  # quote_vol (col 7)
+    Dict[str, Dict[int, float]],  # num_trades (col 8)
+    Dict[str, Dict[int, float]],  # taker_buy_vol (col 9)
+    Dict[str, Dict[int, float]],  # open (col 1)
+    Dict[str, Dict[int, float]],  # high (col 2)
+    Dict[str, Dict[int, float]],  # low (col 3)
+]:
+    """Download full OHLCV + taker/trade data for OFI signal computation.
+
+    Extracts 8 data streams from Binance 1h klines in a single parallel pass:
+    close (col 4), base_vol (col 5), quote_vol (col 7), num_trades (col 8),
+    taker_buy_base_vol (col 9), open (col 1), high (col 2), low (col 3).
+    """
+    empty = lambda: {sym: {} for sym in symbols}  # noqa: E731
+    prices, bvol, qvol, ntrades, tbvol, open_, high, low = (
+        empty(), empty(), empty(), empty(),
+        empty(), empty(), empty(), empty(),
+    )
+    tasks = [(sym, yr, mo) for sym in symbols for yr, mo in months]
+
+    def _fetch_full(task: Tuple[str, int, int]):
+        sym, yr, mo = task
+        mp: Dict[int, float] = {}
+        mv: Dict[int, float] = {}
+        mq: Dict[int, float] = {}
+        mn: Dict[int, float] = {}
+        mt: Dict[int, float] = {}
+        mo_: Dict[int, float] = {}
+        mh: Dict[int, float] = {}
+        ml: Dict[int, float] = {}
+        for row in download_monthly_klines(sym, yr, mo):
+            if not row or not row[0].isdigit() or len(row) < 10:
+                continue
+            ts = _normalize_ts(int(row[0]))
+            try:
+                mp[ts]  = float(row[4])   # close
+                mv[ts]  = float(row[5])   # base volume
+                mq[ts]  = float(row[7])   # quote volume
+                mn[ts]  = float(row[8])   # num trades
+                mt[ts]  = float(row[9])   # taker buy base vol
+                mo_[ts] = float(row[1])   # open
+                mh[ts]  = float(row[2])   # high
+                ml[ts]  = float(row[3])   # low
+            except (ValueError, IndexError):
+                pass
+        return sym, mp, mv, mq, mn, mt, mo_, mh, ml
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_full, t): t for t in tasks}
+        completed = 0
+        for future in as_completed(futures):
+            sym, mp, mv, mq, mn, mt, mo_, mh, ml = future.result()
+            prices[sym].update(mp);  bvol[sym].update(mv)
+            qvol[sym].update(mq);    ntrades[sym].update(mn)
+            tbvol[sym].update(mt);   open_[sym].update(mo_)
+            high[sym].update(mh);    low[sym].update(ml)
+            completed += 1
+            if completed % max(1, len(tasks) // 10) == 0:
+                print(f"  [{completed}/{len(tasks)} files downloaded]", flush=True)
+
+    return prices, bvol, qvol, ntrades, tbvol, open_, high, low
+
+
 def load_prices_recent(symbol: str, months_back: int) -> Dict[int, float]:
     """Load hourly close prices for the most recent `months_back` months (single symbol)."""
     now = datetime.now(timezone.utc)
@@ -364,13 +434,19 @@ def compute_ic_stats(data: List[Tuple[float, float]], n_pairs: int = 10) -> dict
 def run_analysis(
     all_prices: Dict[str, Dict[int, float]],
     all_volumes: Optional[Dict[str, Dict[int, float]]] = None,
+    all_qvol: Optional[Dict[str, Dict[int, float]]] = None,
+    all_ntrades: Optional[Dict[str, Dict[int, float]]] = None,
+    all_tbvol: Optional[Dict[str, Dict[int, float]]] = None,
+    all_open: Optional[Dict[str, Dict[int, float]]] = None,
+    all_high: Optional[Dict[str, Dict[int, float]]] = None,
+    all_low: Optional[Dict[str, Dict[int, float]]] = None,
     regime_filter: bool = False,
 ) -> Dict[str, dict]:
     """
     Compute per-signal IC against forward 6h returns.
 
-    Tests both existing cross-sectional signals (r_30m, r_2h, r_6h, r_24h, C1_composite)
-    and new time-series (TS) candidate formulas (F1–F7):
+    Tests existing cross-sectional signals (r_30m, r_2h, r_6h, r_24h, C1_composite),
+    time-series (TS) candidate formulas (F1–F7), and OFI signals (G1–G6):
       F1: z_ts_6h  — per-asset TS z-score of 6h return vs own 48-period baseline
       F2: z_ts_2h  — per-asset TS z-score of 2h return
       F3: z_ts_24h — per-asset TS z-score of 24h return
@@ -378,12 +454,24 @@ def run_analysis(
       F5: vol_ratio — current vol / rolling_mean(vol, 48) (flow persistence proxy)
       F6: z_ts_6h × min(vol_ratio, 2.0) — volume-confirmed TS momentum
       F7: 0.35·z6h + 0.35·z2h + 0.20·z24h + 0.10·ma_ratio_z (multi-horizon composite)
+      G1: z_ts(taker_buy_ratio) — per-asset TS z-score of taker buy fraction
+      G2: z_ts(candle_body)     — per-asset TS z-score of (close-open)/(high-low)
+      G3: z_ts(quote_vol)       — per-asset TS z-score of USD-denominated volume
+      G4: z_ts(num_trades)      — per-asset TS z-score of trade count
+      G5: z_ts(tbr × |r6h|)    — OFI scaled by directional magnitude
+      G6: 0.50·G1 + 0.30·G2 + 0.20·G4 — OFI composite
 
-    All TS signals have a final cross-sectional z-score step (doctrine: allocation normalization).
+    All TS/OFI signals have a final cross-sectional z-score step (doctrine: allocation normalization).
 
     Args:
         all_prices:    {symbol: {ts_ms: close}}
         all_volumes:   {symbol: {ts_ms: base_volume}} (optional; F5/F6 require this)
+        all_qvol:      {symbol: {ts_ms: quote_volume}} (optional; G3 requires this)
+        all_ntrades:   {symbol: {ts_ms: num_trades}} (optional; G4/G6 require this)
+        all_tbvol:     {symbol: {ts_ms: taker_buy_base_vol}} (optional; G1/G5/G6 require this)
+        all_open:      {symbol: {ts_ms: open}} (optional; G2/G6 require this)
+        all_high:      {symbol: {ts_ms: high}} (optional; G2 requires this)
+        all_low:       {symbol: {ts_ms: low}} (optional; G2 requires this)
         regime_filter: If True, include only TREND-eligible timestamps (BTC vol z <= 0)
 
     Returns:
@@ -409,10 +497,18 @@ def run_analysis(
     price_hist: Dict[str, List[float]] = {pair: [] for pair in active_pairs}
     vol_hist:   Dict[str, List[float]] = {pair: [] for pair in active_pairs}
 
+    # OFI rolling histories per pair (G1–G6 signals)
+    tbr_hist:     Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+    body_hist:    Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+    qvol_hist:    Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+    ntrades_hist: Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+    g5_hist:      Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+
     # Accumulators: signal_name → [(signal_z, fwd_ret)]
     signals_names = [
         "r_30m", "r_2h", "r_6h", "r_24h", "C1_composite",
         "F1_z6h", "F2_z2h", "F3_z24h", "F4_ma", "F5_vol", "F6_z6h_vol", "F7_composite",
+        "G1_tbr", "G2_body", "G3_qvol", "G4_ntrades", "G5_tbr_r6h", "G6_composite",
     ]
     data: Dict[str, List[Tuple[float, float]]] = {s: [] for s in signals_names}
 
@@ -528,6 +624,84 @@ def run_analysis(
         z_f6 = cross_sectional_z(f6_raw) if len(f6_raw) >= n_min else {}
         z_f7 = cross_sectional_z(f7_raw) if len(f7_raw) >= n_min else {}
 
+        # ── OFI signals (G1–G6): per-asset TS z-score → cross-sectional normalize ──
+        # Uses taker buy vol, candle OHLC, quote vol, num trades from Binance klines.
+        # History accessed BEFORE update (no look-ahead bias).
+        ofi_computed: Dict[str, dict] = {}
+        for pair in r6h_raw.keys():
+            # G1: taker buy ratio = taker_buy_base_vol / base_vol
+            tbr = None
+            z_tbr = 0.0
+            if all_tbvol and all_volumes:
+                cur_tb = (all_tbvol.get(pair) or {}).get(ts)
+                cur_bv = (all_volumes.get(pair) or {}).get(ts)
+                if cur_tb is not None and cur_bv is not None and cur_bv > 0:
+                    tbr   = cur_tb / cur_bv
+                    z_tbr = z_score(tbr, tbr_hist[pair])
+
+            # G2: candle body ratio = (close - open) / (high - low)
+            body   = None
+            z_body = 0.0
+            if all_open and all_high and all_low:
+                op = (all_open.get(pair) or {}).get(ts)
+                hi = (all_high.get(pair) or {}).get(ts)
+                lo = (all_low.get(pair)  or {}).get(ts)
+                cl = all_prices[pair].get(ts)
+                if None not in (op, hi, lo, cl):
+                    hl = hi - lo
+                    if hl > 0:
+                        body   = (cl - op) / hl
+                        z_body = z_score(body, body_hist[pair])
+
+            # G3: quote volume TS z-score
+            qv   = None
+            z_qv = 0.0
+            if all_qvol:
+                qv = (all_qvol.get(pair) or {}).get(ts)
+                if qv is not None:
+                    z_qv = z_score(qv, qvol_hist[pair])
+
+            # G4: num trades TS z-score
+            nt   = None
+            z_nt = 0.0
+            if all_ntrades:
+                nt = (all_ntrades.get(pair) or {}).get(ts)
+                if nt is not None:
+                    z_nt = z_score(nt, ntrades_hist[pair])
+
+            # G5: tbr × |r6h| — OFI scaled by directional magnitude
+            g5_raw_val = None
+            z_g5_val   = 0.0
+            if tbr is not None:
+                g5_raw_val = tbr * abs(r6h_raw.get(pair, 0.0))
+                z_g5_val   = z_score(g5_raw_val, g5_hist[pair])
+
+            ofi_computed[pair] = {
+                "tbr": tbr, "z_tbr": z_tbr,
+                "body": body, "z_body": z_body,
+                "qv": qv, "z_qv": z_qv,
+                "nt": nt, "z_nt": z_nt,
+                "g5_raw": g5_raw_val, "z_g5": z_g5_val,
+            }
+
+        # G1–G4: individual TS z-scores; G5: tbr×|r6h| TS z-score; G6: weighted composite
+        g1_rd = {p: c["z_tbr"]  for p, c in ofi_computed.items() if c["tbr"]    is not None}
+        g2_rd = {p: c["z_body"] for p, c in ofi_computed.items() if c["body"]   is not None}
+        g3_rd = {p: c["z_qv"]   for p, c in ofi_computed.items() if c["qv"]     is not None}
+        g4_rd = {p: c["z_nt"]   for p, c in ofi_computed.items() if c["nt"]     is not None}
+        g5_rd = {p: c["z_g5"]   for p, c in ofi_computed.items() if c["g5_raw"] is not None}
+        g6_rd = {
+            p: 0.50 * c["z_tbr"] + 0.30 * c["z_body"] + 0.20 * c["z_nt"]
+            for p, c in ofi_computed.items()
+            if c["tbr"] is not None and c["body"] is not None and c["nt"] is not None
+        }
+        z_g1 = cross_sectional_z(g1_rd) if len(g1_rd) >= n_min else {}
+        z_g2 = cross_sectional_z(g2_rd) if len(g2_rd) >= n_min else {}
+        z_g3 = cross_sectional_z(g3_rd) if len(g3_rd) >= n_min else {}
+        z_g4 = cross_sectional_z(g4_rd) if len(g4_rd) >= n_min else {}
+        z_g5 = cross_sectional_z(g5_rd) if len(g5_rd) >= n_min else {}
+        z_g6 = cross_sectional_z(g6_rd) if len(g6_rd) >= n_min else {}
+
         # Step 3: update TS histories AFTER computing all signals (no look-ahead)
         for pair in active_pairs:
             if pair in r6h_raw:
@@ -557,6 +731,29 @@ def run_analysis(
                     if len(vol_hist[pair]) > TS_LOOKBACK:
                         vol_hist[pair] = vol_hist[pair][-TS_LOOKBACK:]
 
+            # OFI history updates (G1–G6)
+            ofi_c = ofi_computed.get(pair, {})
+            if ofi_c.get("tbr") is not None:
+                tbr_hist[pair].append(ofi_c["tbr"])
+                if len(tbr_hist[pair]) > TS_LOOKBACK:
+                    tbr_hist[pair] = tbr_hist[pair][-TS_LOOKBACK:]
+            if ofi_c.get("body") is not None:
+                body_hist[pair].append(ofi_c["body"])
+                if len(body_hist[pair]) > TS_LOOKBACK:
+                    body_hist[pair] = body_hist[pair][-TS_LOOKBACK:]
+            if ofi_c.get("qv") is not None:
+                qvol_hist[pair].append(ofi_c["qv"])
+                if len(qvol_hist[pair]) > TS_LOOKBACK:
+                    qvol_hist[pair] = qvol_hist[pair][-TS_LOOKBACK:]
+            if ofi_c.get("nt") is not None:
+                ntrades_hist[pair].append(ofi_c["nt"])
+                if len(ntrades_hist[pair]) > TS_LOOKBACK:
+                    ntrades_hist[pair] = ntrades_hist[pair][-TS_LOOKBACK:]
+            if ofi_c.get("g5_raw") is not None:
+                g5_hist[pair].append(ofi_c["g5_raw"])
+                if len(g5_hist[pair]) > TS_LOOKBACK:
+                    g5_hist[pair] = g5_hist[pair][-TS_LOOKBACK:]
+
         # ── Accumulate IC data ──────────────────────────────────────────────────
         for pair in fwd_raw.keys():
             fwd_ret = fwd_raw[pair]
@@ -572,6 +769,12 @@ def run_analysis(
             if pair in z_f5:  data["F5_vol"].append((z_f5[pair], fwd_ret))
             if pair in z_f6:  data["F6_z6h_vol"].append((z_f6[pair], fwd_ret))
             if pair in z_f7:  data["F7_composite"].append((z_f7[pair], fwd_ret))
+            if pair in z_g1:  data["G1_tbr"].append((z_g1[pair], fwd_ret))
+            if pair in z_g2:  data["G2_body"].append((z_g2[pair], fwd_ret))
+            if pair in z_g3:  data["G3_qvol"].append((z_g3[pair], fwd_ret))
+            if pair in z_g4:  data["G4_ntrades"].append((z_g4[pair], fwd_ret))
+            if pair in z_g5:  data["G5_tbr_r6h"].append((z_g5[pair], fwd_ret))
+            if pair in z_g6:  data["G6_composite"].append((z_g6[pair], fwd_ret))
 
     n_pairs = len(active_pairs)
     return {sig: compute_ic_stats(data[sig], n_pairs=n_pairs) for sig in signals_names}
@@ -608,8 +811,11 @@ def main() -> None:
 
     # ── Load data in parallel ──────────────────────────────────────────────────
     print(f"\nDownloading current-period data (last {CURRENT_LOOKBACK_MONTHS} months, {len(pairs)} pairs)...")
+    print("  Extracting full OHLCV + taker/trade columns (G1–G6 OFI signals)...")
     current_months = _month_range_recent(CURRENT_LOOKBACK_MONTHS)
-    current_prices, current_volumes = load_prices_and_volumes_all_parallel(pairs, current_months)
+    (current_prices, current_bvol, current_qvol, current_nt,
+     current_tb, current_open, current_high, current_low) = load_klines_all_parallel(pairs, current_months)
+    current_volumes = current_bvol
 
     # Report coverage
     covered = sum(1 for p in current_prices.values() if len(p) > 100)
@@ -617,39 +823,57 @@ def main() -> None:
 
     print(f"\nDownloading trending-period data (Oct 2024–Jan 2025, {len(pairs)} pairs)...")
     trending_months = _month_range(TRENDING_START, TRENDING_END)
-    trending_prices, trending_volumes = load_prices_and_volumes_all_parallel(pairs, trending_months)
+    (trending_prices, trending_bvol, trending_qvol, trending_nt,
+     trending_tb, trending_open, trending_high, trending_low) = load_klines_all_parallel(pairs, trending_months)
+    trending_volumes = trending_bvol
 
     covered_t = sum(1 for p in trending_prices.values() if len(p) > 100)
     print(f"  {covered_t}/{len(pairs)} pairs have data")
 
     # ── Run analysis ──────────────────────────────────────────────────────────
     print("\nRunning Test A: Current period (unconditional)...")
-    results_A = run_analysis(current_prices, current_volumes, regime_filter=False)
+    results_A = run_analysis(
+        current_prices, current_volumes, current_qvol, current_nt,
+        current_tb, current_open, current_high, current_low, regime_filter=False,
+    )
 
     print("Running Test B: Trending period (Oct 2024–Jan 2025)...")
-    results_B = run_analysis(trending_prices, trending_volumes, regime_filter=False)
+    results_B = run_analysis(
+        trending_prices, trending_volumes, trending_qvol, trending_nt,
+        trending_tb, trending_open, trending_high, trending_low, regime_filter=False,
+    )
 
     print("Running Test C: Current period (TREND-eligible hours only)...")
-    results_C = run_analysis(current_prices, current_volumes, regime_filter=True)
+    results_C = run_analysis(
+        current_prices, current_volumes, current_qvol, current_nt,
+        current_tb, current_open, current_high, current_low, regime_filter=True,
+    )
 
     # ── Format output ─────────────────────────────────────────────────────────
-    cs_signals = ["r_30m", "r_2h", "r_6h", "r_24h", "C1_composite"]
-    ts_signals = ["F1_z6h", "F2_z2h", "F3_z24h", "F4_ma", "F5_vol", "F6_z6h_vol", "F7_composite"]
-    all_signals = cs_signals + ts_signals
+    cs_signals  = ["r_30m", "r_2h", "r_6h", "r_24h", "C1_composite"]
+    ts_signals  = ["F1_z6h", "F2_z2h", "F3_z24h", "F4_ma", "F5_vol", "F6_z6h_vol", "F7_composite"]
+    ofi_signals = ["G1_tbr", "G2_body", "G3_qvol", "G4_ntrades", "G5_tbr_r6h", "G6_composite"]
+    all_signals = cs_signals + ts_signals + ofi_signals
 
     signal_labels = {
-        "r_30m":        "1h ret(30m~)  ",
-        "r_2h":         "2h return     ",
-        "r_6h":         "6h return     ",
-        "r_24h":        "24h return    ",
-        "C1_composite": "C1 composite  ",
-        "F1_z6h":       "F1: TS z_6h   ",
-        "F2_z2h":       "F2: TS z_2h   ",
-        "F3_z24h":      "F3: TS z_24h  ",
+        "r_30m":        "1h ret(30m~)   ",
+        "r_2h":         "2h return      ",
+        "r_6h":         "6h return      ",
+        "r_24h":        "24h return     ",
+        "C1_composite": "C1 composite   ",
+        "F1_z6h":       "F1: TS z_6h    ",
+        "F2_z2h":       "F2: TS z_2h    ",
+        "F3_z24h":      "F3: TS z_24h   ",
         "F4_ma":        "F4: TS MA-dev  ",
         "F5_vol":       "F5: vol ratio  ",
-        "F6_z6h_vol":   "F6: z6h×vol   ",
+        "F6_z6h_vol":   "F6: z6h×vol    ",
         "F7_composite": "F7: TS compos. ",
+        "G1_tbr":       "G1: taker_buy  ",
+        "G2_body":      "G2: candle_body",
+        "G3_qvol":      "G3: quote_vol  ",
+        "G4_ntrades":   "G4: num_trades ",
+        "G5_tbr_r6h":   "G5: tbr×|r6h|  ",
+        "G6_composite": "G6: OFI compos.",
     }
 
     # Count filtered timestamps for Test C
@@ -704,10 +928,31 @@ def main() -> None:
         c = fmt_ic(results_C.get(sig, {}))
         lines.append(f"| {label} | {a} | {b} | {c} |")
 
-    # ── Decision gate for TS formula selection ─────────────────────────────────
     lines += [
         "",
-        "## TS Formula Selection — Decision Gate",
+        "## Part 3: OFI Signal IC — Candidate Formulas G1–G6",
+        "",
+        "Mechanism: market (taker) buy orders reflect directional conviction — aggressive buyers "
+        "pay the spread to get immediate execution. When taker buy fraction is abnormally high "
+        "relative to own baseline, continuation pressure builds over next 6h.  ",
+        "G1: pure taker buy ratio · G2: candle body conviction · G3: USD vol anomaly · "
+        "G4: trade count anomaly · G5: OFI × directional magnitude · G6: OFI composite.  ",
+        "Two-step: per-asset TS z-score (Binance klines col 9/5/7/8/1/2/3) → cross-sectional normalize.",
+        "",
+        "| Signal | Test A (current) | Test B (trending) | Test C (TREND-cond.) |",
+        "|--------|-----------------|-------------------|----------------------|",
+    ]
+    for sig in ofi_signals:
+        label = signal_labels[sig].strip()
+        a = fmt_ic(results_A.get(sig, {}))
+        b = fmt_ic(results_B.get(sig, {}))
+        c = fmt_ic(results_C.get(sig, {}))
+        lines.append(f"| {label} | {a} | {b} | {c} |")
+
+    # ── Decision gate for TS + OFI formula selection ───────────────────────────
+    lines += [
+        "",
+        "## Signal Selection — Decision Gate (F1–F7 + G1–G6)",
         "",
         "Gate: **IC > 0 in Test B** (trending period) **AND t > 1.0**.  ",
         "Tiebreak: highest IC Sharpe (mean_IC / std_IC across period ICs).",
@@ -717,7 +962,7 @@ def main() -> None:
     ]
 
     passing = []
-    for sig in ts_signals:
+    for sig in ts_signals + ofi_signals:
         ic_b = results_B.get(sig, {}).get("mean_ic") or 0
         t_b  = results_B.get(sig, {}).get("t_stat")  or 0
         period_ics = results_B.get(sig, {}).get("period_ics", [])
@@ -788,7 +1033,8 @@ def main() -> None:
         "",
         "- `r_30m` proxy: Binance Vision provides 1h bars; 1h return used as 30m proxy.",
         "- F5/F6 require volume data (Binance klines col 5).",
-        "- TS signals use 48-period rolling baseline; first 3 periods return z=0 (warmup).",
+        "- G1–G6 require Binance klines cols 9 (taker_buy_base_vol), 1–3 (OHLC), 7 (quote_vol), 8 (num_trades).",
+        "- TS/OFI signals use 48-period rolling baseline; first 3 periods return z=0 (warmup).",
         "- Two-step construction: (1) per-asset TS z-score → (2) cross-sectional normalize.",
         "",
         "Reference: `ic_results.md` for baseline unconditional IC, "
@@ -853,10 +1099,11 @@ def main() -> None:
                        [results_C.get(s, {}).get("mean_ic") or 0 for s in sig_list]
             ax.set_ylim(min(all_vals) - 0.04, max(all_vals) + 0.07)
 
-        cs_labels = ["30m(~)", "2h", "6h", "24h", "C1"]
+        cs_labels  = ["30m(~)", "2h", "6h", "24h", "C1"]
         ts_labels  = ["F1:z6h", "F2:z2h", "F3:z24h", "F4:MA", "F5:vol", "F6:z6h×vol", "F7:comp"]
+        ofi_labels = ["G1:tbr", "G2:body", "G3:qvol", "G4:ntrd", "G5:tbr×r6h", "G6:OFI"]
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 15))
 
         draw_ic_bars(ax1, cs_signals, cs_labels)
         ax1.set_title(
@@ -873,6 +1120,14 @@ def main() -> None:
             fontsize=10, fontweight="bold"
         )
         ax2.legend(fontsize=8, loc="upper right")
+
+        draw_ic_bars(ax3, ofi_signals, ofi_labels)
+        ax3.set_title(
+            "Part 3: Order Flow Imbalance (OFI) Candidate Formulas G1–G6\n"
+            "Taker buy fraction, candle body, USD vol, trade count — Binance klines cols 1–3,7–9",
+            fontsize=10, fontweight="bold"
+        )
+        ax3.legend(fontsize=8, loc="upper right")
 
         plt.tight_layout()
         chart_path = os.path.join(CHARTS_DIR, "ic_multi_horizon.png")

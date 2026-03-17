@@ -133,7 +133,20 @@ All formulas apply a final cross-sectional z-score normalization (doctrine: allo
 
 **Result: no formula passes the decision gate.** Best result: F5 (volume ratio) IC = +0.018, t = +0.30 in Test B — positive direction but statistically insignificant. All other TS formulas show negative IC in Test B (range: -0.0000 to -0.043). The root-cause hypothesis — that per-asset normalization would remove meme-coin contamination from the cross-section — is not confirmed empirically.
 
-**Implication for strategy design:** The strategy's value proposition rests on three components that do not require selection IC:
+**Phase 3 — Order Flow Imbalance (OFI) signal search (G1–G6):** Following the same doctrine, six microstructure candidate formulas were tested using previously untested Binance klines columns (taker_buy_base_vol col 9, OHLC cols 1–3, quote_vol col 7, num_trades col 8). The mechanism hypothesis: market (taker) buy orders reflect directional conviction — aggressive buyers pay the spread to obtain immediate execution. When taker buy fraction is abnormally high relative to an asset's own baseline, continuation pressure should build over the next 6h (Glosten-Milgrom 1985; Chordia et al. 2002).
+
+| Formula | Description |
+|---------|-------------|
+| G1 | TS z-score of taker_buy_ratio = taker_buy_vol / base_vol (klines col 9/5) |
+| G2 | TS z-score of candle body ratio = (close − open) / (high − low) — directional conviction |
+| G3 | TS z-score of quote_asset_volume (col 7) — USD-denominated vol anomaly |
+| G4 | TS z-score of num_trades (col 8) — trade activity anomaly |
+| G5 | TS z-score of taker_buy_ratio × \|r_6h\| — OFI scaled by directional magnitude |
+| G6 | 0.50·G1 + 0.30·G2 + 0.20·G4 — OFI composite |
+
+**Result: no OFI formula passes the decision gate.** Best results in the trending period: G5 IC = +0.008, t = +0.13; G3 IC = +0.008, t = +0.14; G4 IC = +0.005, t = +0.08. All are positive in direction but far below the t > 1.0 significance threshold. The microstructure hypothesis fails at hourly aggregation: sub-hour order flow signal decays completely within the 1h kline, leaving no detectable predictive power over 6h horizons. Note that G1 (pure taker buy ratio) shows negative IC (-0.020, t = -0.34 in Test B), indicating that in this universe, elevated taker buying in the current hour is a reversal signal at the cross-sectional level — consistent with the exhaustion interpretation captured by the M_t maturity filter already in production.
+
+**Exhaustive signal search conclusion:** Three mechanistically distinct families have been tested — cross-sectional price momentum (Phase 1), time-series price momentum (Phase 2), and market microstructure/order flow (Phase 3). No formula from any family achieves IC > 0 and t > 1.0 in the trending period. The strategy's value proposition rests on three components that do not require selection IC:
 
 1. **Regime gating (Sortino):** The HAZARD_DEFENSIVE state (0% exposure when LSI > 0.60) avoids all downside deviation on stressed market days. Binary switching — not signal selection — is what drives Sortino.
 2. **Drawdown control (Calmar):** The -12% kill switch hard-caps max drawdown. A portfolio that earns 5% with a -6% max drawdown scores Calmar = 0.83; extending to -20% drawdown gives Calmar = 0.25.
@@ -146,3 +159,5 @@ The competition scoring formula (0.4×Sortino + 0.3×Sharpe + 0.3×Calmar) rewar
 - Jegadeesh, N. & Titman, S. (1993). Returns to Buying Winners and Selling Losers: Implications for Stock Market Efficiency. *Journal of Finance*, 48(1), 65–91.
 - Liu, Y. & Tsyvinski, A. (2021). Risks and Returns of Cryptocurrency. *Review of Financial Studies*, 34(6), 2689–2727.
 - Cong, L. W., Li. Y., & Wang, N. (2021). Tokenomics: Dynamic Adoption and Valuation. *Review of Financial Studies*, 34(3), 1105–1155.
+- Glosten, L. R. & Milgrom, P. R. (1985). Bid, Ask and Transaction Prices in a Specialist Market with Heterogeneously Informed Traders. *Journal of Financial Economics*, 14(1), 71–100.
+- Chordia, T., Roll, R., & Subrahmanyam, A. (2002). Order Imbalance, Liquidity, and Market Returns. *Journal of Financial Economics*, 65(1), 111–130.

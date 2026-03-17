@@ -1,6 +1,6 @@
 # Extended IC Validation — Multi-Signal, Multi-Period, Regime-Conditional
 
-**Universe:** 67 pairs  |  **Generated:** 2026-03-17 02:21 UTC
+**Universe:** 67 pairs  |  **Generated:** 2026-03-17 04:39 UTC
 
 ## Test Conditions
 
@@ -36,7 +36,22 @@ F1–F3: pure TS momentum · F4: MA deviation anchor · F5: volume flow proxy ·
 | F6: z6h×vol | IC=-0.0346 t=-1.59 hit=41% n=2119 | IC=-0.0189 t=-0.32 hit=48% n=287 | IC=-0.0282 t=-0.93 hit=44% n=1083 |
 | F7: TS compos. | IC=-0.0478 t=-2.20 hit=38% n=2117 | IC=-0.0146 t=-0.25 hit=49% n=285 | IC=-0.0337 t=-1.11 hit=43% n=1081 |
 
-## TS Formula Selection — Decision Gate
+## Part 3: OFI Signal IC — Candidate Formulas G1–G6
+
+Mechanism: market (taker) buy orders reflect directional conviction — aggressive buyers pay the spread to get immediate execution. When taker buy fraction is abnormally high relative to own baseline, continuation pressure builds over next 6h.  
+G1: pure taker buy ratio · G2: candle body conviction · G3: USD vol anomaly · G4: trade count anomaly · G5: OFI × directional magnitude · G6: OFI composite.  
+Two-step: per-asset TS z-score (Binance klines col 9/5/7/8/1/2/3) → cross-sectional normalize.
+
+| Signal | Test A (current) | Test B (trending) | Test C (TREND-cond.) |
+|--------|-----------------|-------------------|----------------------|
+| G1: taker_buy | IC=-0.0148 t=-0.68 hit=45% n=2129 | IC=-0.0195 t=-0.34 hit=44% n=297 | IC=-0.0131 t=-0.43 hit=46% n=1093 |
+| G2: candle_body | IC=-0.0332 t=-1.53 hit=41% n=2129 | IC=-0.0476 t=-0.82 hit=35% n=297 | IC=-0.0308 t=-1.02 hit=41% n=1093 |
+| G3: quote_vol | IC=-0.0180 t=-0.83 hit=45% n=2129 | IC=+0.0084 t=+0.14 hit=52% n=297 * | IC=-0.0113 t=-0.37 hit=47% n=1093 |
+| G4: num_trades | IC=-0.0226 t=-1.04 hit=43% n=2129 | IC=+0.0045 t=+0.08 hit=47% n=297 * | IC=-0.0142 t=-0.47 hit=46% n=1093 |
+| G5: tbr×|r6h| | IC=-0.0033 t=-0.15 hit=48% n=2129 | IC=+0.0075 t=+0.13 hit=51% n=297 * | IC=+0.0082 t=+0.27 hit=53% n=1093 * |
+| G6: OFI compos. | IC=-0.0262 t=-1.21 hit=43% n=2129 | IC=-0.0241 t=-0.41 hit=44% n=297 | IC=-0.0233 t=-0.77 hit=42% n=1093 |
+
+## Signal Selection — Decision Gate (F1–F7 + G1–G6)
 
 Gate: **IC > 0 in Test B** (trending period) **AND t > 1.0**.  
 Tiebreak: highest IC Sharpe (mean_IC / std_IC across period ICs).
@@ -50,6 +65,12 @@ Tiebreak: highest IC Sharpe (mean_IC / std_IC across period ICs).
 | F5: vol ratio | +0.0177 | +0.30 | +0.09 | FAIL |
 | F6: z6h×vol | -0.0189 | -0.32 | -0.10 | FAIL |
 | F7: TS compos. | -0.0146 | -0.25 | -0.07 | FAIL |
+| G1: taker_buy | -0.0195 | -0.34 | -0.14 | FAIL |
+| G2: candle_body | -0.0476 | -0.82 | -0.28 | FAIL |
+| G3: quote_vol | +0.0084 | +0.14 | +0.05 | FAIL |
+| G4: num_trades | +0.0045 | +0.08 | +0.02 | FAIL |
+| G5: tbr×|r6h| | +0.0075 | +0.13 | +0.04 | FAIL |
+| G6: OFI compos. | -0.0241 | -0.41 | -0.15 | FAIL |
 
 **NO TS FORMULA passes the decision gate.**  
 Strategy value rests on regime-gated drawdown control (Sortino/Calmar),  
@@ -67,7 +88,8 @@ Strategy value is entirely in regime gating (Sortino) and kill switch (Calmar).
 
 - `r_30m` proxy: Binance Vision provides 1h bars; 1h return used as 30m proxy.
 - F5/F6 require volume data (Binance klines col 5).
-- TS signals use 48-period rolling baseline; first 3 periods return z=0 (warmup).
+- G1–G6 require Binance klines cols 9 (taker_buy_base_vol), 1–3 (OHLC), 7 (quote_vol), 8 (num_trades).
+- TS/OFI signals use 48-period rolling baseline; first 3 periods return z=0 (warmup).
 - Two-step construction: (1) per-asset TS z-score → (2) cross-sectional normalize.
 
 Reference: `ic_results.md` for baseline unconditional IC, `backtest_results.md` for simulation results.
