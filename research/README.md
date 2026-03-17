@@ -39,16 +39,18 @@ research/
 │   │       ├── MAT_TS_ZSCORE_R6H/    [NEW] REJECTED
 │   │       ├── MAT_VOL_RATIO/        [NEW] APPROVED (IC uplift +0.064 — strongest C3 signal)
 │   │       └── MAT_CONSEC_UP/        [NEW] REJECTED
-│   ├── 03_results/                   Script-generated result records
-│   │   ├── 01_ic_results.md          H1 CS proxy IC results
-│   │   ├── 02_stability_screen.md    H5 stability proxy results
-│   │   ├── 03_rejected_proxies.md    H6 streak rejection record
-│   │   ├── 04_combination_search.md  GP combination results (0.70×H1 + 0.30×H5)
-│   │   ├── 05_ts_variant_search.md   [NEW] TS + H2c/H2d IC results
-│   │   ├── 05_vector_tests.md        Bare → +C2 → +C3 sequential improvement
-│   │   ├── 06_backtest.md            Full strategy backtest (maker fee 0.05%)
-│   │   └── 07_robustness.md          Block-resample 97.2%; weight-perturbation
-│   ├── 03_OOS_Reservation/           [NEW] OOS holdout formal declaration
+│   ├── 02_Candidates/                Script-generated result records
+│   │   ├── Signal/
+│   │   │   ├── 01_ic_results.md      H1 CS proxy IC results
+│   │   │   ├── 02_stability_screen.md H5 stability proxy results
+│   │   │   ├── 03_rejected_proxies.md H6 streak rejection record
+│   │   │   ├── 04_combination_search.md GP combination results (0.70×H1 + 0.30×H5)
+│   │   │   └── 05_ts_variant_search.md TS + H2c/H2d IC results
+│   │   └── Strategy/
+│   │       ├── 01_vector_tests.md    Bare → +C2 → +C3 sequential improvement
+│   │       ├── 02_backtest.md        Full strategy backtest (maker fee 0.05%)
+│   │       └── 03_robustness.md      Block-resample 97.2%; weight-perturbation
+│   ├── 03_OOS_Reservation/           OOS holdout formal declaration
 │   │   └── oos_reservation.md        Dec–Jan holdout documented
 │   ├── 04_decision.md                Promotion record — PROMOTED
 │   └── 05_limitations.md             H1-specific limitations and caveats
@@ -56,12 +58,13 @@ research/
 ├── H2_transitional_drift/            H2 = Expectation Diffusion via BTC (Momentum archetype)
 │   ├── 00_mechanism.md               Mechanism theory (Δᵢ = βᵢ·r_BTC − rᵢ)
 │   ├── 01_Proxies/                   Per-proxy folders
+│   │   ├── 00_proxy_universe.md      H2 proxy scope inventory
 │   │   └── Alpha_C1/
 │   │       ├── H2A_CS_RELATIVE/      {00_mechanism.md} — COLLAPSED (= H1 identity)
 │   │       ├── H2B_BTC_LAG/          {00_mechanism.md} — FAILED (no lag)
-│   │       ├── H2C_BETA_ADJ_GAP/     [NEW] {00_mechanism.md} — PROMOTED (IC=+0.042)
-│   │       └── H2D_BTCGATED_H1/      [NEW] {00_mechanism.md} — PASS (IC=+0.019)
-│   ├── 03_results/
+│   │       ├── H2C_BETA_ADJ_GAP/     {00_mechanism.md, 01_ic_test.md} — PROMOTED (IC=+0.042)
+│   │       └── H2D_BTCGATED_H1/      {00_mechanism.md, 01_ic_test.md} — PASS (IC=+0.019)
+│   ├── 02_Candidates/Signal/
 │   │   ├── 01_ic_results.md          H2a collapse + H2b failure + H2c/H2d results
 │   │   └── 02_mechanism_test.md      BTC-conditional IC uplift (+0.087)
 │   ├── 04_decision.md                H2a COLLAPSED, H2c PROMOTED, mechanism CONFIRMED
@@ -100,15 +103,15 @@ research/
 
 | Step | Script | Output | Purpose |
 |------|--------|--------|---------|
-| 3A | `research/signal_search.py` | `H1_reversal/03_results/01_ic_results.md` + `05_ts_variant_search.md` | All proxy IC validation (CS + TS families + H2c/H2d) |
+| 3A | `research/signal_search.py` | `H1_reversal/02_Candidates/Signal/01_ic_results.md` + `05_ts_variant_search.md` | All proxy IC validation (CS + TS families + H2c/H2d) |
 | 4A/4B | `research/modifier_screen.py` | `H1_reversal/01_Proxies/Hazard_C2/*/02_modifier_screen.md` + C3 screens | Individual C2/C3 modifier screens |
-| 2B | `research/gp_search.py` | `H1_reversal/03_results/04_combination_search.md` | GP linear weight search (expanded terminal set incl. TS) |
-| 3D | `research/h2_mechanism_test.py` | `H2_transitional_drift/03_results/02_mechanism_test.md` | BTC-conditional IC uplift |
-| 3C-5 | `research/vector_tests.py` | `H1_reversal/03_results/05_vector_tests.md` | Bare → +C2 → +C3 improvement |
+| 2B | `research/gp_search.py` | `H1_reversal/02_Candidates/Signal/04_combination_search.md` | GP linear weight search (expanded terminal set incl. TS) |
+| 3D | `research/h2_mechanism_test.py` | `H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md` | BTC-conditional IC uplift |
+| 3C-5 | `research/vector_tests.py` | `H1_reversal/02_Candidates/Strategy/01_vector_tests.md` | Bare → +C2 → +C3 improvement |
 | 6 | `research/portfolio_tests.py` | `overlays/portfolio_construction/01_sizing_schemes.md` | Sizing scheme comparison |
 | 7 | `research/regime_tests.py` | `overlays/portfolio_construction/02_regime_allocation.md` | Regime ladder comparison |
-| 12 | `research/robustness.py` | `H1_reversal/03_results/07_robustness.md` | Robustness checks |
-| 10 | `research/backtest_simulation.py` | `H1_reversal/03_results/06_backtest.md` | Full strategy simulation (maker fee 0.05%) |
+| 12 | `research/robustness.py` | `H1_reversal/02_Candidates/Strategy/03_robustness.md` | Robustness checks |
+| 10 | `research/backtest_simulation.py` | `H1_reversal/02_Candidates/Strategy/02_backtest.md` | Full strategy simulation (maker fee 0.05%) |
 
 ## Script Dependencies
 

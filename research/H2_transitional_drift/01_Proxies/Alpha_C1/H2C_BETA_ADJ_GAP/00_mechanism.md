@@ -57,5 +57,5 @@ H2: Expectation Diffusion via BTC — non-collapsed beta-adjusted variant
 (IC > 0.03, t > 1.5). Non-collapsed H2 proxy confirmed as distinct from H1.
 Eligible for inclusion in expanded GP search terminal set.
 
-See [../../03_results/01_ic_results.md](../../03_results/01_ic_results.md) for
+See [../../02_Candidates/Signal/01_ic_results.md](../../02_Candidates/Signal/01_ic_results.md) for
 full IC table across all horizons.

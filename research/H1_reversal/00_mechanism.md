@@ -160,12 +160,11 @@ C1_i = 0.70 × neg_c1_z + 0.30 × neg_vol_z
 
 | Next step | File |
 |-----------|------|
-| Proxy universe (all candidate signals) | [01_proxy_universe.md](01_proxy_universe.md) |
-| Validation plan (IC test spec) | [02_validation_plan.md](02_validation_plan.md) |
-| IC results | [03_results/01_ic_results.md](03_results/01_ic_results.md) |
-| H5 stability screen results | [03_results/02_stability_screen.md](03_results/02_stability_screen.md) |
-| Combination search results | [03_results/04_combination_search.md](03_results/04_combination_search.md) |
-| Vector backtest results | [03_results/05_vector_tests.md](03_results/05_vector_tests.md) |
+| Proxy universe (all candidate signals) | [01_Proxies/00_proxy_universe.md](01_Proxies/00_proxy_universe.md) |
+| IC results (CS family) | [02_Candidates/Signal/01_ic_results.md](02_Candidates/Signal/01_ic_results.md) |
+| IC results (TS + H2 family) | [02_Candidates/Signal/05_ts_variant_search.md](02_Candidates/Signal/05_ts_variant_search.md) |
+| Combination search results | [02_Candidates/Signal/04_combination_search.md](02_Candidates/Signal/04_combination_search.md) |
+| Vector backtest results | [02_Candidates/Strategy/01_vector_tests.md](02_Candidates/Strategy/01_vector_tests.md) |
 | Promotion decision | [04_decision.md](04_decision.md) |
 | H2 mechanism (why H1 IC varies with BTC) | [../H2_transitional_drift/00_mechanism.md](../H2_transitional_drift/00_mechanism.md) |
 | Regime overlay | [../overlays/regime/00_mechanism.md](../overlays/regime/00_mechanism.md) |

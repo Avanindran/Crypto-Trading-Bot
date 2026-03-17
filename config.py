@@ -137,7 +137,7 @@ REGIME_PARAMS: Dict[str, dict] = {
 # Entry / Exit Filters
 # ──────────────────────────────────────────────────────────
 MAX_MATURITY_FOR_ENTRY: float = 0.72    # Entry blocked if M_t > 0.72 (slightly more permissive; avoids blocking strong trends)
-EXIT_C1_THRESHOLD: float = 0.20         # Exit if C1 z-score falls below 0.20
+EXIT_C1_THRESHOLD: float = 0.25         # Exit if C1 z-score falls below 0.25 (research: 0.25 > 0.20, Sortino 1.86 vs 1.32)
 
 # ──────────────────────────────────────────────────────────
 # Position Sizing (Quarter-Kelly targeting Sortino maximization)

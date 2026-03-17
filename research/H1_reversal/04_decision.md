@@ -67,7 +67,7 @@ The signal inverts the C1 momentum composite (selecting laggards, not winners) a
   - w=1.0 (vol-only): IC = +0.049
 - **GP-optimal weight:** w_H5 = 0.30, validated by IC-Sharpe maximization on training period
 
-Full robustness: see [03_results/07_robustness.md](03_results/07_robustness.md).
+Full robustness: see [02_Candidates/Strategy/03_robustness.md](02_Candidates/Strategy/03_robustness.md).
 
 ---
 
@@ -92,7 +92,7 @@ At the 4h optimization horizon, the combination achieves IC-Sharpe = +0.190 vs +
 | Calmar | 5.07 | 18.13 | 18.67 | — | — |
 | Sortino | 2.31 | 3.94 | 4.33 | — | — |
 
-Full vector tests: see [03_results/05_vector_tests.md](03_results/05_vector_tests.md).
+Full vector tests: see [02_Candidates/Strategy/01_vector_tests.md](02_Candidates/Strategy/01_vector_tests.md).
 
 ---
 
@@ -120,9 +120,11 @@ The promoted formula retains the regime infrastructure and replaces the signal d
 
 | Step | File |
 |------|------|
-| IC results | [03_results/01_ic_results.md](03_results/01_ic_results.md) |
-| H5 stability screen | [03_results/02_stability_screen.md](03_results/02_stability_screen.md) |
-| GP combination search | [03_results/04_combination_search.md](03_results/04_combination_search.md) |
-| Vector tests | [03_results/05_vector_tests.md](03_results/05_vector_tests.md) |
-| Robustness | [03_results/07_robustness.md](03_results/07_robustness.md) |
+| Proxy universe | [01_Proxies/00_proxy_universe.md](01_Proxies/00_proxy_universe.md) |
+| IC results (CS) | [02_Candidates/Signal/01_ic_results.md](02_Candidates/Signal/01_ic_results.md) |
+| IC results (TS + H2) | [02_Candidates/Signal/05_ts_variant_search.md](02_Candidates/Signal/05_ts_variant_search.md) |
+| GP combination search | [02_Candidates/Signal/04_combination_search.md](02_Candidates/Signal/04_combination_search.md) |
+| Vector tests | [02_Candidates/Strategy/01_vector_tests.md](02_Candidates/Strategy/01_vector_tests.md) |
+| Backtest | [02_Candidates/Strategy/02_backtest.md](02_Candidates/Strategy/02_backtest.md) |
+| Robustness | [02_Candidates/Strategy/03_robustness.md](02_Candidates/Strategy/03_robustness.md) |
 | Limitations | [05_limitations.md](05_limitations.md) |

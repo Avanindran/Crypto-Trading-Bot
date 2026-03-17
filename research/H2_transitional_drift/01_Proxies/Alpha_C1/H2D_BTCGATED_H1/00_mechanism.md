@@ -21,7 +21,7 @@ last 2 hours. When BTC is flat (|r_BTC,2h| ≤ 0.005), the signal is zeroed out.
 
 ## Economic Rationale
 
-The H2 mechanism test (research/H2_transitional_drift/03_results/02_mechanism_test.md)
+The H2 mechanism test (research/H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md)
 found that H1 reversal IC is strongly conditioned on BTC movement:
 
 - IC when BTC flat (|r_BTC| < 0.5%): +0.024

@@ -1,106 +1,103 @@
-# Strategy Backtest Results — H1 Reversal + H5 Low-Vol (Promoted Signal)
-# Period: 2024-10-01 to 2025-01-31
-# Universe: 67 pairs (1000CHEEMSUSDT, AAVEUSDT, ADAUSDT, APTUSDT, ARBUSDT, ...)
-# Generated: 2026-03-17 10:46 UTC
+# H1 Reversal — Mechanism-Specific Backtest
+**Generated:** 2026-03-17 14:48 UTC
 
 ## Parameter Disclosure
 
-All parameters match config.py exactly. No parameters were modified
-based on these results (theory-derived, OOS validation).
+All risk overlay parameters selected by sweep on Oct–Nov 2024 training period.
+OOS window (Dec 2024–Jan 2025) evaluated **after** parameter selection, never used for selection.
 
-  Rebalance cadence:  6 hours
-  Regime gross caps:  85% TREND / 65% NEUTRAL / 0% DEFENSIVE
-  Max positions:      5 TREND / 3 NEUTRAL / 0 DEFENSIVE
-  C1 entry threshold: 0.60 TREND / 1.00 NEUTRAL
-  M_t block:          pct_rank > 0.72
-  Stop-loss:          -4% from entry
-  Fee per trade:      0.05% (maker, limit orders — per competition rules)
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| C1 formula | 0.70×CS_z(−C1_raw) + 0.30×CS_z(−rvol) | signal_search.py / vector_tests.py |
+| Hold cadence | 4h | vector_tests.py (promoted object) |
+| TOP_N | 3 | Portfolio sweep |
+| Sizing | kelly | Portfolio sweep |
+| C2 z-threshold | 0.75 | Regime sweep |
+| Stop-loss | -0.04 | Risk overlay sweep |
+| C1 exit threshold | 0.25 | Signal exit sweep |
+| Fee/trade | 0.05% maker | Competition rules |
 
-## Performance Summary
+---
 
-  Net Total Return:    -5.3%
-  Pre-fee Return:      16.5%  (approx. before fee deduction)
-  Annualized Return:   -15.0%
-  Sortino Ratio:       0.00
-  Sharpe Ratio:        0.00
-  Calmar Ratio:        -0.52
-  Max Drawdown:        -28.8%
+## Version A — Cross-Validation (must match vector_tests.py within 0.1pp)
 
-## Fee Drag Analysis
+| Run | Total Return | Sortino | Calmar | MaxDD |
+|-----|-------------|---------|--------|-------|
+| H1_A_bare_fee0.00 | 95.2% | 2.56 | 0.00 | -30.5% |
+| H1_A_bare_fee0.05 | -6.0% | 0.29 | 0.00 | -42.8% |
+| H1_A_bare_fee0.10 | -54.8% | -1.98 | 0.00 | -63.0% |
+| H1_A_c2_fee0.00 | 149.2% | 3.58 | 0.00 | -21.3% |
+| H1_A_c2_fee0.05 | 28.9% | 1.31 | 0.00 | -31.4% |
+| H1_A_c2_fee0.10 | -33.4% | -0.96 | 0.00 | -49.2% |
 
-  Total Fees (4-month test): 21.8% of initial NAV
-  Daily fee rate:            0.178% per day
-  Projected 10-day fees:     ~1.8%  (competition window)
-  Daily NAV turnover:        355.9% per day
-  Test period (days):        123
+---
 
-  NOTE: The 4-month fee drag (21.8%) is 12x larger than the 10-day competition
-  window estimate (~1.8%). Pre-fee return: 16.5%.
+## Risk Overlay Sweeps
 
-## vs. Buy-and-Hold BTC
+### B: Stop-Loss Threshold
 
-  Strategy net return:     -5.3%
-  Strategy pre-fee return: 16.5%
-  BTC buy-and-hold:        61.2%  (Oct 2024–Jan 2025 bull run)
-  Strategy max drawdown:   -28.8%
+| Stop Level | Total Return | Calmar | MaxDD | Stops/Period |
+|------------|-------------|--------|-------|--------------|
+| -0.01 | 31.8% | 3.75 | -33.9% | 5.4% |
+| -0.02 | 26.3% | 2.76 | -36.1% | 3.8% |
+| -0.03 | 30.6% | 4.14 | -29.2% | 3.0% |
+| -0.04 | 36.4% | 4.77 | -31.7% | 1.4% |
+| -0.05 | -13.7% | -0.67 | -52.8% | 1.5% |
+| -0.06 | -12.2% | -0.66 | -48.3% | 1.1% |
+| -0.08 | 21.8% | 1.57 | -50.6% | 0.7% |
+| None | -11.9% | -0.55 | -56.9% | 0.0% |
 
-  NOTE: Oct 2024–Jan 2025 was an exceptional 61% bull run. Any regime-gated
-  strategy that moves to cash during volatility spikes will underperform
-  buy-and-hold in a pure trending market — that is the intended design.
-  The competition scoring metric is Sortino/Calmar, not return vs buy-and-hold.
+**Selected: H1_SL_OPT = -0.04**
 
-## Regime Distribution
+### C: C1 Signal Exit
 
-  TREND_SUPPORTIVE:   54.5% of rebalance periods
-  NEUTRAL_MIXED:      25.6% of rebalance periods
-  HAZARD_DEFENSIVE:   19.9% of rebalance periods (in cash)
-  Total rebalances:   492
+| Exit Threshold | Total Return | Sortino | Calmar |
+|---------------|-------------|---------|--------|
+| None | 36.4% | 1.41 | 4.77 |
+| 0.05 | 18.5% | 0.96 | 1.58 |
+| 0.1 | 23.7% | 1.12 | 2.26 |
+| 0.15 | 26.5% | 1.19 | 2.71 |
+| 0.2 | 31.3% | 1.32 | 3.25 |
+| 0.25 | 53.4% | 1.86 | 7.05 |
+| 0.3 | 24.4% | 1.15 | 2.39 |
 
-## Train vs OOS Split
+**Selected: H1_EXIT_OPT = 0.25**
 
-  Holdout boundary:    Dec 1 2024 (HOLDOUT_START_TS = 1733011200000 ms)
-  Train period:        Oct–Nov 2024 (IC optimisation window)
-  OOS holdout:         Dec 2024–Jan 2025 (unseen at signal selection time)
+### D: Regime Z-Threshold
 
-  Train Return:        21.4%
-  Train Sortino:       2.14
-  Train Sharpe:        2.39
-  Train MaxDD:         -15.3%
+| Z-Threshold | Total Return | Calmar | MaxDD |
+|-------------|-------------|--------|-------|
+| 0.75 | 80.6% | 14.52 | -32.9% |
+| 1.0 | 78.8% | 13.95 | -33.0% |
+| 1.25 | 69.2% | 11.07 | -33.9% |
+| 1.5 | 53.4% | 7.05 | -36.2% |
+| 1.75 | 39.1% | 4.15 | -40.0% |
+| 2.0 | 19.8% | 1.57 | -45.0% |
+| 2.5 | 42.7% | 4.83 | -38.7% |
 
-  OOS Return:          -21.5%
-  OOS Sortino:         -1.94
-  OOS Sharpe:          -2.16
-  OOS MaxDD:           -28.8%
+**Selected: H1_Z_OPT = 0.75**
 
-  NOTE: OOS full-period Sortino degrades vs train. The SIGNAL does not overfit
-  (holdout IC = +0.066 > train IC = +0.047, from ic_validation_extended.py).
-  The full-strategy degradation is driven by: (a) identical per-trade fee drag
-  applied across both sub-periods; (b) Dec 2024 correction triggering HAZARD
-  mode and creating a trough from which OOS NAV does not recover within Jan.
-  Competition window (10 days) has ~3.2% fee drag vs ~20% per sub-period here.
+---
 
-## Interpretation
+## H1 Final — All Selected Layers
 
-The pre-fee gross return (16.5%) is positive, confirming that the C1 signal
-(0.70×H1_reversal + 0.30×H5_low_vol, IC=+0.057 at 4h) generates real alpha when
-the regime gate is inactive. The net underperformance vs buy-and-hold is driven by
-fee accumulation over the 4-month horizon — a cost structure that does not apply to
-the 10-day competition window (estimated ~1.8% fee drag).
-The HAZARD_DEFENSIVE regime (in cash ~20% of the time) explicitly avoids
-downside deviation, which is the primary mechanism for maximizing the Sortino
-ratio under the competition scoring formula (0.4×Sortino + 0.3×Sharpe + 0.3×Calmar).
+| Metric | Value |
+|--------|-------|
+| Total Return | 39.9% |
+| Annualized Return | 170.5% |
+| Sortino | 2.78 |
+| Calmar | 11.03 |
+| Max Drawdown | -15.5% |
 
-## Fee Sensitivity Analysis
+## OOS Holdout (Dec 2024 – Jan 2025)
 
-Backtest repeated at three fee levels to isolate fee drag from signal quality.
+| Metric | Value |
+|--------|-------|
+| Total Return | 2.5% |
+| Sortino | 0.53 |
+| Calmar | 0.97 |
+| Max Drawdown | -15.9% |
 
-| Fee/trade | Net Return | Pre-fee Return | Fees Total | Sharpe | Max DD |
-|-----------|------------|----------------|------------|--------|--------|
-| 0.00% | 16.5% | 16.5% | 0.0% | 1.08 | -21.6% |
-| 0.05% | -5.3% | 16.5% | 21.8% | 0.00 | -28.8% |
-| 0.10% | -23.1% | 16.4% | 39.4% | -1.09 | -35.5% |
+---
 
-  Interpretation: pre-fee return is approximately fee-invariant (same signal,
-  same regime gating). Difference between fee scenarios is pure drag.
-  At 0.05% maker: fee drag ≈ half of 0.10% taker, improving net return by
-  ~17.8pp over the 4-month test.
+*Charts: see `H1_reversal/02_Candidates/Strategy/charts/backtest/`*

@@ -188,9 +188,15 @@ def run_backtest(
     use_c2: bool = False,
     use_c3: bool = False,
     label: str = "bare",
+    fee_per_trade: float = 0.0,
 ) -> Tuple[List[Tuple[int, float]], dict]:
     """
     Simulate a long-only equal-weight portfolio rebalanced every HOLD_HOURS.
+
+    Args:
+        fee_per_trade: Fee per side as a fraction (e.g. 0.0005 = 0.05% maker).
+            Applied as full-turnover upper bound: period_return -= 2 * fee_per_trade.
+            Default 0.0 preserves existing behavior (no fee).
 
     Returns:
         nav_series: list of (timestamp_ms, nav_value)
@@ -281,7 +287,7 @@ def run_backtest(
                 rets.append(r)
 
         if rets:
-            port_ret = sum(rets) / len(rets)
+            port_ret = sum(rets) / len(rets) - 2.0 * fee_per_trade
             nav *= (1 + port_ret)
             period_rets.append(port_ret)
         else:
@@ -591,7 +597,7 @@ def write_report(
     lines.append(f"| 4B | C3 maturity modifier approved | {_pass_fail(c3_pass)} |")
     lines.append(f"| 5  | Full signal vector produces best Sharpe | {_pass_fail((c3.get('sharpe_ann') or 0) >= (b.get('sharpe_ann') or 0))} |")
     lines.append(f"\n**Overall: {'ALL STEPS PASSED — promoted signal + C2 + C3 form a coherent strategy' if full_signal_ok else 'ONE OR MORE STEPS FAILED — review individual sections above'}**\n")
-    lines.append(f"*Equity curves: see `research/charts/06_vector_tests/equity_curves.png`*\n")
+    lines.append(f"*Equity curves: see `research/H1_reversal/02_Candidates/Strategy/charts/vector_tests/equity_curves.png`*\n")
 
     return "\n".join(lines)
 
@@ -635,7 +641,8 @@ def write_chart(
         ax.legend(loc="upper left")
         ax.grid(True, alpha=0.3)
 
-        out = os.path.join(_here, "charts", "06_vector_tests", "equity_curves.png")
+        out = os.path.join(_here, "H1_reversal", "02_Candidates", "Strategy", "charts", "vector_tests", "equity_curves.png")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
         fig.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
         print(f"  Wrote chart: {out}")
@@ -713,7 +720,8 @@ def main() -> None:
         mat_result,
         nav_bare, nav_c2, nav_c2c3,
     )
-    out_md = os.path.join(_here, "H1_reversal", "03_results", "05_vector_tests.md")
+    out_md = os.path.join(_here, "H1_reversal", "02_Candidates", "Strategy", "01_vector_tests.md")
+    os.makedirs(os.path.dirname(out_md), exist_ok=True)
     with open(out_md, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"\n  Wrote {out_md}")

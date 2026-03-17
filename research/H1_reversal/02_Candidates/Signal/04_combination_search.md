@@ -57,4 +57,4 @@ Star `*` = |t| > 1.5.
 Formula: `CS_z(0.7 × (H1_neg_c1) + 0.3 × (H5_neg_vol))`  
 Economic description: 70% short-term reversal (H1_neg_c1) + 30% low-volatility stability (H5_neg_vol)  
 
-See `09_robustness/` for block-resampling and parameter perturbation tests.
+See `02_Candidates/Strategy/` for block-resampling and parameter perturbation tests.

@@ -72,7 +72,7 @@ In the compressed research timeline (competition deadline Mar 21, 2026), robustn
 - After seeing robustness results (97.2% block-resample hit rate), **no parameters were changed**
 - Vector tests afterward confirmed the same formula independently
 
-If you compare the signal formula in [04_decision.md](04_decision.md) with the inputs used in [03_results/07_robustness.md](03_results/07_robustness.md), they are identical — no post-hoc fitting occurred.
+If you compare the signal formula in [04_decision.md](04_decision.md) with the inputs used in [02_Candidates/Strategy/03_robustness.md](02_Candidates/Strategy/03_robustness.md), they are identical — no post-hoc fitting occurred.
 
 ---
 

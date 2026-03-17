@@ -15,7 +15,7 @@ C1_i = 0.70 × CS_z(−C1_raw_i) + 0.30 × CS_z(−realized_vol_6h_i)
 C1_raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h − median_r2h)
 ```
 
-H2 signal is **not deployed**. The direct Δᵢ proxy failed (H2a collapses, H2b has no lag at 1h). The H2 mechanism is confirmed but the proxy is pending rebuild.
+H2C signal (`CS_z(β_i × r_BTC,2h − r_i,2h)`) has been validated (IC=+0.042 @ 1h, t=+9.85) and backtested standalone (Sortino 1.34, Calmar 2.96). Dual-engine allocation sweep found α_TREND_OPT=0.0 — H1 dominates in TREND_ACTIVE periods; H2C and H1 select overlapping laggard assets without additive diversification. **H2C is not deployed in Round 1.** Deploying H2C would require live β_i rolling OLS in `feature_builder.py` — planned for post-Round-1.
 
 ---
 
@@ -96,12 +96,13 @@ In a trending bull run (competition period), TREND_SUPPORTIVE is expected to dom
 
 ---
 
-## What Changes H2 Deployment Would Require
+## Research-Validated Parameter Changes (2026-03-17)
 
-1. Implement non-collapsed H2 proxy (raw Δᵢ or beta-adjusted)
-2. Validate on fresh test data (IC > 0, t > 1.0)
-3. Implement alt-season detector (altcoin-BTC correlation regime)
-4. Replace C1 formula with regime-conditional dual-engine blend (see [01_signal_aggregation.md](01_signal_aggregation.md))
-5. Commit and deploy before Mar 28 repo deadline
+From mechanism-specific backtest sweeps:
 
-**Current assessment:** Not achievable in Round 1 timeline without risking bot stability.
+| Config parameter | Old value | New value | Evidence |
+|-----------------|-----------|-----------|---------|
+| `STOP_LOSS_PCT` | −4% | **−4%** (confirmed) | H1 SL sweep: −4% best Calmar, stops <5%/period |
+| `EXIT_C1_THRESHOLD` | 0.20 | **0.25** | H1 exit sweep: Sortino 1.86 vs 1.32 at 0.20 |
+
+See `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` for full sweep tables.

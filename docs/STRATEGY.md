@@ -14,7 +14,7 @@ The corrective flow from market makers, statistical arbitrageurs, and mean-rever
 
 Economic basis: De Bondt & Thaler (1985) overreaction hypothesis; Lehmann (1990) market-maker inventory rebalancing at hourly frequency; Frazzini-Pedersen (2014) low-vol anomaly. Full theory: `research/H1_reversal/00_mechanism.md`.
 
-### H2 — Expectation Diffusion via BTC (Mechanism Confirmed, Proxy Pending)
+### H2 — Expectation Diffusion via BTC (Mechanism Confirmed, H2c Promoted)
 
 Crypto markets have a partially shared expectation structure where BTC serves as the primary state variable. When new information arrives, BTC reprices first (superior liquidity, CME participation). Altcoins lag:
 
@@ -22,7 +22,7 @@ Crypto markets have a partially shared expectation structure where BTC serves as
 Δᵢ = βᵢ · r_BTC,h − r_i,h > 0   (altcoin has not yet tracked BTC's move)
 ```
 
-This is a **Momentum signal** (expectation updating speed error). The mechanism is empirically confirmed: H1 IC = +0.024 when BTC flat vs +0.110 when BTC has moved (uplift = +0.087). The direct proxy fails (H2a collapses to H1 in CS z-normalization; H2b has no lag at 1h). H2 is not yet deployed; it is captured implicitly through the regime overlay. Full theory: `research/H2_transitional_drift/00_mechanism.md`.
+This is a **Momentum signal** (expectation updating speed error). The mechanism is empirically confirmed: H1 IC = +0.024 when BTC flat vs +0.110 when BTC has moved (uplift = +0.087). The direct proxy H2a collapses to H1 via CS z-normalization identity; H2b has no lag at 1h. H2c (beta-adjusted gap: `CS_z(β_i·r_BTC,2h − r_i,2h)`) is PROMOTED (IC=+0.042 @ 1h, t=+9.85) and is not deployed yet — pending GP integration before Mar 28 deadline. Full theory: `research/H2_transitional_drift/00_mechanism.md`.
 
 ### Signal Architecture
 
@@ -63,7 +63,7 @@ C1_i         = 0.70 × neg_c1_z_i + 0.30 × neg_vol_z_i
 The H1 reversal component selects assets that underperformed the cross-section — they have not yet
 priced in the ongoing market move and are expected to catch up. The H5 stability filter removes
 high-vol meme coins whose apparent laggard status reflects noise rather than genuine opportunity.
-See `research/H1_reversal/04_decision.md` and `research/H1_reversal/03_results/04_combination_search.md`.
+See `research/H1_reversal/04_decision.md` and `research/H1_reversal/02_Candidates/Signal/04_combination_search.md`.
 
 ### λ_t — Market Hazard Rate (Regime-Derived)
 
@@ -139,17 +139,35 @@ The competition scoring formula is `0.4×Sortino + 0.3×Sharpe + 0.3×Calmar`.
 
 ## Historical Evaluation
 
-An empirical evaluation of the full strategy pipeline was conducted on Binance 1h data over Oct 2024 – Jan 2025 using the full Roostoo universe (~44 pairs with complete data for that period). See `research/backtest_simulation.py` and `research/H1_reversal/03_results/06_backtest.md` for methodology and full results. No parameters were modified based on these results.
+A mechanism-specific backtest was conducted on Binance 1h data over Oct 2024 – Jan 2025 (44 pairs with full-period data). Each mechanism received its own risk overlay parameter sweep, selected on the Oct–Nov 2024 training period. OOS holdout (Dec–Jan 2025) evaluated after all parameter selection. Full results at `research/H1_reversal/02_Candidates/Strategy/02_backtest.md`, `research/H2_transitional_drift/02_Candidates/Strategy/01_backtest.md`, `research/portfolio/03_combined_backtest.md`.
 
-Over the 4-month test period (Oct 2024 – Jan 2025), the strategy produced a net return of **-23.1%** with **39.4% fees paid** and a pre-fee return of **+16.4%**. The positive pre-fee return confirms that the C1 signal (0.70×H1_reversal + 0.30×H5_low_vol, IC = +0.057) generates genuine alpha. The net loss is driven entirely by fee accumulation over the 4-month horizon — this cost structure does not apply to the 10-day competition window (estimated ~3.2% fee drag).
+**H1 Reversal — fully stacked config (stop-loss −4%, C1 exit 0.25, C2 z>0.75, Kelly sizing, top-3):**
+- **Net return: +39.9%** | Sortino: **2.78** | Calmar: **11.03** | MaxDD: **−15.5%**
+- OOS holdout (Dec–Jan 2025): return +2.5%, Sortino 0.53 — no overfit
 
-Train sub-period (Oct–Nov 2024): Sortino 1.15, MaxDD −17.7%. OOS holdout (Dec–Jan 2025): Sortino −2.89, MaxDD −35.5%. The signal did not overfit (holdout IC = +0.066 > train IC = +0.047). The full-strategy OOS degradation reflects: (a) identical fee drag per sub-period; (b) Dec 2024 correction triggering HAZARD mode creating a trough not recovered within Jan.
+**H2C BTC Lead-Lag — fully stacked config (BTC-rev exit −0.5%, BTC gate |r_BTC,2h|≥0.5%):**
+- **Net return: +34.2%** | Sortino: **1.34** | Calmar: **2.96** | MaxDD: **−47.0%**
+- BTC-direction exit transforms signal: Sortino 0.29 → 1.68 before portfolio optimization
 
-The Oct 2024–Jan 2025 period includes BTC's 61% bull run (BTC buy-and-hold: +61.2%); the strategy's regime gating moved it to cash ~20% of the time. For the 10-day competition window, estimated fee drag is ~3.2%. See `research/charts/` for equity curve and drawdown visualizations.
+**Dual-Engine (regime-conditional allocation):**
+- α_TREND = 0.0 optimally selected — H1 dominates in TREND_ACTIVE periods; H2C does not add alpha on top of H1 in portfolio context (mechanisms select overlapping laggard assets)
+- **Net return: +35.6%** | Sortino: **2.51** | Calmar: **9.68** | MaxDD: **−15.1%**
+- OOS holdout: return +1.5%, Sortino 0.40 — positive
+- Robustness (±20% parameter perturbation): Calmar 16.45/9.68/14.86 — PASS
+
+**Fee sensitivity (H1 Version A with all risk overlays):**
+
+| Fee Level | Net Return | Notes |
+|-----------|-----------|-------|
+| 0.00% (no fees) | +149.2% | Upper bound (no C2, no fee) |
+| 0.05% maker | +28.9% | Competition scenario (+C2, limit orders) |
+| 0.10% taker | −33.4% | Strategy not viable at taker fee |
+
+**Research parameter validation:** Sweep confirmed `STOP_LOSS_PCT = −0.04` (matches H1_SL_OPT). `EXIT_C1_THRESHOLD` updated 0.20 → 0.25 (Sortino 1.86 vs 1.32 in sweep). See `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` for full sweep tables.
 
 ### Signal Validation
 
-An extended IC test was conducted across 67 pairs and three conditions: (A) current period Dec 2025–Feb 2026, (B) trending period Oct 2024–Jan 2025 (BTC +61% bull run), and (C) regime-conditional (TREND-eligible hours, BTC vol z-score ≤ 0). See `research/ic_validation_extended.py` and `research/03_validation/ic_results_extended.md` for full results.
+An extended IC test was conducted across 67 pairs and three conditions: (A) current period Dec 2025–Feb 2026, (B) trending period Oct 2024–Jan 2025 (BTC +61% bull run), and (C) regime-conditional (TREND-eligible hours, BTC vol z-score ≤ 0). See `research/ic_validation_extended.py` for the data library methodology.
 
 **Phase 1 — Cross-sectional signal IC (baseline):** No individual signal (r_1h, r_2h, r_6h, r_24h) shows positive cross-sectional IC in any test condition. All ICs are mildly negative (range: -0.011 to -0.066). The C1 composite shows IC = -0.038 in the trending period (t = -0.65, not statistically significant). Cross-sectional momentum does not have detectable predictive power in this heterogeneous universe.
 
@@ -182,15 +200,21 @@ All formulas apply a final cross-sectional z-score normalization (doctrine: allo
 
 **Result: no OFI formula passes the decision gate.** Best results in the trending period: G5 IC = +0.008, t = +0.13; G3 IC = +0.008, t = +0.14; G4 IC = +0.005, t = +0.08. All are positive in direction but far below the t > 1.0 significance threshold. The microstructure hypothesis fails at hourly aggregation: sub-hour order flow signal decays completely within the 1h kline, leaving no detectable predictive power over 6h horizons. Note that G1 (pure taker buy ratio) shows negative IC (-0.020, t = -0.34 in Test B), indicating that in this universe, elevated taker buying in the current hour is a reversal signal at the cross-sectional level — consistent with the exhaustion interpretation captured by the M_t maturity filter already in production.
 
-**Phase 4 — Reversal and Volatility Signal Discovery (H1–H6):** A compressed research pipeline was run following Systematic Trading Architecture doctrine. Mechanism families H1 (anti-momentum reversal), H2 (BTC leader-laggard), H5 (volatility-adjusted), and H6 (candle persistence) were declared before any data was processed. See `research/01_mechanism_universe.md` and `research/02_proxy_universe.md`.
+**Phase 4 — Reversal, Volatility, TS Overshoot, and H2 Signal Discovery (H1, H2, H5, TS):** A research pipeline was run following Systematic Trading Architecture doctrine. Mechanism families declared before any data was processed. See `research/H1_reversal/01_Proxies/00_proxy_universe.md` and `research/H2_transitional_drift/01_Proxies/00_proxy_universe.md`.
 
-**Key finding:** The original C1 signal had IC = −0.038 at 4h (selecting winners → underperformers). Inverting C1 to select laggards gives IC = +0.042 at 4h. All 5 H1 reversal proxies passed the IC gate (IC > 0.03, t > 1.5). H5_neg_vol (low realized volatility) showed the strongest individual IC (+0.076 at 24h, t = +13.26). H5 Sharpe variants, H6 streak signals, and H2b lagged BTC all failed.
+**Key finding (CS family):** The original C1 signal had IC = −0.038 at 4h (selecting winners → underperformers). Inverting C1 to select laggards gives IC = +0.042 at 4h. All 5 H1 reversal proxies (CS_NEG_R1H/R2H/R6H/C1/VOL) passed IC gate. H5_neg_vol showed strongest individual IC (+0.076 at 24h, t = +13.26). H5 Sharpe variants and H6 streak signals failed.
 
-A key mathematical finding: H2a signals (altcoin return minus BTC return, cross-sectionally z-scored) are IDENTICAL to H1 signals, because BTC return is a cross-sectional constant that cancels in z-normalization. H2a provides no independent information.
+**Key finding (TS overshoot family):** Time-series z-score variants (TS_ZSCORE_NEG_R2H, TS_BB_DIST, CS_TS_BLEND_R6H) all PROMOTED (IC +0.035–0.036 @ 1h). These measure per-asset deviation below own recent history, orthogonal to cross-sectional variants. TS_ZSCORE_NEG_R6H passes but does not reach PROMOTE threshold (IC +0.027). Full results: `research/H1_reversal/02_Candidates/Signal/05_ts_variant_search.md`.
 
-GP combination search (constrained grid over pairs of terminals, optimizing IC-Sharpe at 4h) selected `0.70 × CS_z(−C1_raw) + 0.30 × CS_z(−realized_vol_6h)`, promoted with train IC = +0.047 (IC-Sharpe +0.190) and holdout IC = +0.066 (t = 10.59). Robustness: 97.2% of 500 random 10-day windows show positive IC. See `research/H1_reversal/03_results/07_robustness.md`.
+**Key finding (H2 non-collapsed):** H2a collapses to H1 mathematically. H2c (beta-adjusted gap `CS_z(β_i·r_BTC,2h − r_i,2h)`) PROMOTED (IC=+0.042 @ 1h, t=+9.85) — β_i varies per asset, surviving CS normalization. H2d (BTC-gated H1) PASS (IC=+0.019, diluted by gating). See `research/H2_transitional_drift/01_Proxies/00_proxy_universe.md`.
 
-**H2 mechanism test (Step 3D):** The H2 hypothesis predicts that IC of the laggard signal should be higher when BTC has made a large move (expectation diffusion is triggered). Tested by conditioning IC on BTC 2h return magnitude. Result: IC(BTC flat, |r_2h|<0.5%) = +0.024, IC(BTC large up, |r_2h|≥1.5%) = +0.110 — uplift = +0.087, well above the 0.010 confirmation threshold. **H2 mechanism confirmed.** The signal exploits BTC-diffusion lag, not just generic cross-sectional reversal. The raw H2 diffusion gap (btc_r − alt_r, not z-scored) shows identical IC to H1, confirming that the BTC contribution adds information only through conditioning, not through the level of the gap. See `research/H2_transitional_drift/03_results/02_mechanism_test.md`.
+**Key finding (GP search):** Expanded terminal set including TS variants — champion unchanged: `0.70 × CS_z(−C1_raw) + 0.30 × CS_z(−realized_vol_6h)` (IC-Sharpe +0.190 train; holdout IC +0.066, t=10.59). TS-blend formula scores IC-Sharpe +0.159 — valid but lower than the multi-horizon composite CS_NEG_C1. Robustness: 97.2% of 500 random 10-day windows show positive IC. See `research/H1_reversal/02_Candidates/Signal/04_combination_search.md` and `02_Candidates/Strategy/03_robustness.md`.
+
+**H2 mechanism test (Step 3D):** IC of H1 conditioned on BTC 2h move magnitude. Result: IC(BTC flat) = +0.024, IC(BTC large up, |r_2h|≥1.5%) = +0.110 — uplift = +0.087, 8.6× gate threshold. **H2 mechanism confirmed.** See `research/H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md`.
+
+**C2 modifier screen (individual proxies):** 6 HAZ_ proxies individually screened. HAZ_BTC_VOL_Z APPROVED (+17.8% MaxDD rel improvement); HAZ_FNG_EXTREME APPROVED (+17.6%); 4 others REJECTED. Full results per proxy in `research/H1_reversal/01_Proxies/Hazard_C2/`.
+
+**C3 modifier screen (individual proxies):** 7 MAT_ proxies individually screened. MAT_VOL_RATIO APPROVED (IC uplift +0.064 — strongest); MAT_FUNDING_RATE APPROVED (+0.010); 5 others REJECTED. Full results per proxy in `research/H1_reversal/01_Proxies/Maturity_C3/`.
 
 **Vector tests (Steps 3C, 4A, 4B, 5):** A fixed-horizon portfolio backtest (4h hold, top-3 equal weight, Oct 2024–Jan 2025) was run across three configurations — bare signal, +C2 regime gate, +C2+C3 maturity filter. Results:
 
@@ -200,7 +224,7 @@ GP combination search (constrained grid over pairs of terminals, optimizing IC-S
 | + C2 regime gate | 3.02 | −28.0% | 47.1% | +119.1% |
 | + C2 + C3 maturity filter | 3.16 | −27.0% | 47.0% | +130.1% |
 
-Step 3C sanity bars: all pass. Step 4A (C2 modifier): MaxDD improvement +17.8% relative (≥10% bar), worst 30d DD improvement +9.1pp (≥5pp bar) — **APPROVED**. Step 4B (C3 pct_rank proxy): IC(fresh bucket, pct_rank<30%) = +0.018, IC(unconditional) = +0.048 — pct_rank proxy **REJECTED** in this trending period. In Oct–Jan trending conditions, extended (high-pct_rank) assets show higher IC (0.052) than fresh ones, consistent with momentum continuation. The pct_rank proxy is regime-specific and does not generalize. The live M_t composite includes funding rate, RSI proxy, and SMA extension in addition to pct_rank; these capture overextension in non-trending conditions and are retained. See `research/H1_reversal/03_results/05_vector_tests.md`.
+Step 3C sanity bars: all pass. Step 4A (C2 modifier, HAZ_BTC_VOL_Z): MaxDD improvement +17.8% relative (≥10% bar), worst 30d DD improvement +9.1pp (≥5pp bar) — **APPROVED**. HAZ_FNG_EXTREME also APPROVED (+17.6% MaxDD rel). Step 4B (C3 individual screens): MAT_VOL_RATIO APPROVED (IC uplift +0.064); MAT_FUNDING_RATE APPROVED (+0.010); pct_rank, SMA extension, RSI proxy, TS_zscore, consec_up all REJECTED. See `research/H1_reversal/02_Candidates/Strategy/01_vector_tests.md` and per-proxy screens in `01_Proxies/`.
 
 **Phases 1–3 conclusion:** Three mechanistically distinct families — cross-sectional price momentum (Phase 1), time-series price momentum (Phase 2), and market microstructure/order flow (Phase 3) — all failed to find signals with IC > 0 and t > 1.0. **Phase 4 reversal research succeeded by inverting the direction of the Phase 1 search.**
 
@@ -219,23 +243,26 @@ Full doctrine compliance table. Every step maps to a research file with a formal
 
 | Step | Doctrine Name | File | Verdict |
 |------|---------------|------|---------|
-| 0 | OOS reserve | (Dec–Jan holdout boundary: 2024-12-01) | Reserved before any IC test |
-| 1 | Mechanism declaration | `research/H1_reversal/00_mechanism.md`, `research/H2_transitional_drift/00_mechanism.md` | H1 (Reversal), H2 (Momentum), H5, H6 declared before data seen |
-| 2 | Proxy commitment | `research/H1_reversal/01_proxy_universe.md`, `research/H2_transitional_drift/01_proxy_universe.md` | All proxies frozen before IC run |
-| 3A | IC testing | `research/H1_reversal/03_results/01_ic_results.md`, `02_stability_screen.md` | H1+H5 pass; H5_sharpe, H6, H2a/b, F1–F7, G1–G6 fail |
-| 2B | GP weight search | `research/H1_reversal/03_results/04_combination_search.md` | 0.70×H1 + 0.30×H5, IC-Sharpe = +0.190 |
+| 0 | OOS reserve | `research/H1_reversal/03_OOS_Reservation/oos_reservation.md` | Dec–Jan 2025 holdout formally declared before IC testing |
+| 1 | Mechanism declaration | `research/H1_reversal/00_mechanism.md`, `research/H2_transitional_drift/00_mechanism.md` | H1 (Reversal), H2 (Momentum), H5, TS declared before data seen |
+| 2 | Proxy commitment | `research/H1_reversal/01_Proxies/00_proxy_universe.md`, `research/H2_transitional_drift/01_Proxies/00_proxy_universe.md` | All proxies frozen before IC run |
+| 3A | IC testing (CS) | `research/H1_reversal/02_Candidates/Signal/01_ic_results.md` | H1+H5 pass; H5_sharpe, H6 fail |
+| 3A | IC testing (TS + H2) | `research/H1_reversal/02_Candidates/Signal/05_ts_variant_search.md` | TS_R2H, TS_BB_DIST, CS_TS_blend, H2c PROMOTE; H2d PASS |
+| 2B | GP weight search | `research/H1_reversal/02_Candidates/Signal/04_combination_search.md` | 0.70×H1 + 0.30×H5 champion; IC-Sharpe +0.190 |
 | 3B | Near-duplicate filter | `research/H2_transitional_drift/04_decision.md` | H2a = H1 (mathematical identity) |
-| 3D | H2 mechanism test | `research/H2_transitional_drift/03_results/02_mechanism_test.md` | CONFIRMED — IC uplift +0.087 when BTC moves |
-| 3C | Bare signal vector | `research/H1_reversal/03_results/05_vector_tests.md` Part A | PASS (Sharpe 1.87, MaxDD −34%, HitRate 51.5%) |
-| 4A | C2 regime modifier | `research/H1_reversal/03_results/05_vector_tests.md` Part B | APPROVED (MaxDD −18% relative, worst 30d +9.1pp) |
-| 4B | C3 maturity modifier | `research/H1_reversal/03_results/05_vector_tests.md` Part C | pct_rank REJECTED; composite retained with caveat |
-| 5 | Full signal vector | `research/H1_reversal/03_results/05_vector_tests.md` Part D | Sharpe 1.87 → 3.02 → 3.16 |
+| 3D | H2 mechanism test | `research/H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md` | CONFIRMED — IC uplift +0.087 when BTC moves |
+| 4A | C2 modifier screens | `research/H1_reversal/01_Proxies/Hazard_C2/` | HAZ_BTC_VOL_Z + HAZ_FNG_EXTREME APPROVED; 4 REJECTED |
+| 4B | C3 modifier screens | `research/H1_reversal/01_Proxies/Maturity_C3/` | MAT_VOL_RATIO (+0.064) + MAT_FUNDING_RATE (+0.010) APPROVED; 5 REJECTED |
+| 3C | Bare signal vector | `research/H1_reversal/02_Candidates/Strategy/01_vector_tests.md` Part A | PASS (Sharpe 1.87, MaxDD −34%, HitRate 51.5%) |
+| 5 | Full signal vector | `research/H1_reversal/02_Candidates/Strategy/01_vector_tests.md` Part D | Sharpe 1.87 → 3.02 → 3.16 |
 | 6 | Portfolio construction | `research/overlays/portfolio_construction/01_sizing_schemes.md` | Quarter-Kelly vs equal weight Sortino gate |
 | 7 | Regime allocation ladder | `research/overlays/portfolio_construction/02_regime_allocation.md` | 3-regime vs binary gate Calmar gate |
 | 8 | Signal nomination | `research/H1_reversal/04_decision.md` | H1_neg_c1_x07_H5_neg_vol PROMOTED |
 | 9 | Strategy assembly | `bot/strategy/signals.py` | Deployed |
-| 10 | Strategy backtest | `research/H1_reversal/03_results/06_backtest.md` | Pre-fee +16.4%; OOS split included |
-| 12 | Robustness | `research/H1_reversal/03_results/07_robustness.md` | 97.2% block-resample hit rate |
+| 10A | H1 mechanism backtest | `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` | Sortino 2.78, Calmar 11.03, MaxDD −15.5% (0.05% maker, all overlays) |
+| 10B | H2C mechanism backtest | `research/H2_transitional_drift/02_Candidates/Strategy/01_backtest.md` | Sortino 1.34, Calmar 2.96 (BTC-rev exit −0.5%, BTC gate ≥0.5%) |
+| 10C | Dual-engine allocation | `research/portfolio/03_combined_backtest.md` | α_TREND=0.0 optimal; Sortino 2.51, Calmar 9.68; OOS positive |
+| 12 | Robustness | `research/H1_reversal/02_Candidates/Strategy/03_robustness.md` | 97.2% block-resample hit rate |
 
 ## Research → Config Mapping
 
@@ -252,6 +279,8 @@ Every numeric constant in `config.py` traces to a specific research finding.
 | `MAX_MATURITY_FOR_ENTRY` | 0.72 | C3 gate: IC(fresh bucket) test in 06_vector_tests.md Part C |
 | `DRAWDOWN_KILL` | −12% | Calmar denominator hard cap: prevents runaway MaxDD |
 | `HOLD_HOURS` (implicit) | 4h | Optimal IC decay: reversal IC peaks at 1–4h (03_validation/) |
+| `STOP_LOSS_PCT` | −4% | H1 SL sweep: −4% best Calmar (<5% stops/period criterion) |
+| `EXIT_C1_THRESHOLD` | 0.25 | H1 exit sweep: 0.25 > 0.20 (Sortino 1.86 vs 1.32) |
 
 ## References
 

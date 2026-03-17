@@ -14,7 +14,7 @@ All mechanisms pre-committed before IC data was seen (see `00_objective_and_cons
 | **H1** Transient Expectation Overshoot | Reversal | PROMOTED | Yes | [H1_reversal/](H1_reversal/) |
 | **H2** Expectation Diffusion via BTC | Momentum | PENDING REBUILD | No | [H2_transitional_drift/](H2_transitional_drift/) |
 | **H5** Low-Vol Stability Filter | (H1 companion) | PROMOTED (as H1 blend) | Yes | [H1_reversal/](H1_reversal/) |
-| **H6** Streak Persistence | (rejected) | FAILED — near-zero IC | No | [H1_reversal/03_results/03_rejected_proxies.md](H1_reversal/03_results/03_rejected_proxies.md) |
+| **H6** Streak Persistence | (rejected) | FAILED — near-zero IC | No | [H1_reversal/02_Candidates/Signal/03_rejected_proxies.md](H1_reversal/02_Candidates/Signal/03_rejected_proxies.md) |
 | **Regime** λ_t Hazard Rate | Overlay | APPROVED | Yes | [overlays/regime/](overlays/regime/) |
 | **Maturity** M_t Drift Capacity | Overlay | PROVISIONAL | Yes | [overlays/maturity/](overlays/maturity/) |
 

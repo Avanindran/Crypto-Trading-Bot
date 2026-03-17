@@ -110,7 +110,7 @@ Returns of infrequently traded assets exhibit lead-lag relationships relative to
 
 **The mechanism is empirically CONFIRMED. The direct proxy FAILED.**
 
-Mechanism confirmation (H2 mechanism test, `03_results/02_mechanism_test.md`):
+Mechanism confirmation (H2 mechanism test, `02_Candidates/Signal/02_mechanism_test.md`):
 ```
 IC of H1 signal conditioned on BTC move magnitude:
   BTC flat (|r_2h| < 0.5%):       IC = +0.024
@@ -132,13 +132,9 @@ H2a is therefore **mathematically identical to H1** in the cross-sectional frame
 **Why H2b proxy failed:**
 `H2b = lagged BTC return as market-timing predictor`. At 1h resolution, any predictive value from the previous hour's BTC return has already been arbitraged away within the same 1h kline aggregation. Pearson r ≈ −0.003 across all tested lags.
 
-**Path forward (experimental):**
-The correct H2 proxy must preserve BTC as a **non-constant** cross-sectional discriminator. Options:
-1. **Raw divergence:** `signal_i = r_BTC − r_i` (unzscored — preserves BTC level)
-2. **Beta-adjusted:** `signal_i = β_i · r_BTC − r_i` where β_i estimated from rolling 48h regression
-3. **Conditional entry:** Use BTC move > threshold as an entry trigger (switches H1 from passive to active)
+**H2c validation:** `H2C_BETA_ADJ_GAP = CS_z(β_i · r_BTC,2h − r_i,2h)` where β_i = rolling 48h OLS slope. This is Option 2 above, validated: IC=+0.042 @ 1h, t=+9.85, PROMOTED. β_i varies per asset, so the signal survives CS normalization — confirmed non-collapsed. See `01_Proxies/Alpha_C1/H2C_BETA_ADJ_GAP/`.
 
-None of these have been validated. H2 remains experimental until a proxy with IC > 0 and t > 1.0 is found.
+**H2d validation:** `H2D_BTCGATED_H1 = CS_z(−r_2h) × I(|r_BTC,2h| > 0.5%)`. This is Option 3 above, PASS (IC=+0.019 unconditionally; +0.110 when active). Better framed as C2 modifier than standalone C1.
 
 ---
 
@@ -167,10 +163,9 @@ None of these have been validated. H2 remains experimental until a proxy with IC
 
 | Step | File |
 |------|------|
-| Proxy universe | [01_proxy_universe.md](01_proxy_universe.md) |
-| Validation plan (IC conditioning test spec) | [02_validation_plan.md](02_validation_plan.md) |
-| IC results (H2a collapse, H2b failure) | [03_results/01_ic_results.md](03_results/01_ic_results.md) |
-| Mechanism test (BTC-conditional IC uplift) | [03_results/02_mechanism_test.md](03_results/02_mechanism_test.md) |
+| Proxy universe | [01_Proxies/00_proxy_universe.md](01_Proxies/00_proxy_universe.md) |
+| IC results (H2a collapse, H2b failure) | [02_Candidates/Signal/01_ic_results.md](02_Candidates/Signal/01_ic_results.md) |
+| Mechanism test (BTC-conditional IC uplift) | [02_Candidates/Signal/02_mechanism_test.md](02_Candidates/Signal/02_mechanism_test.md) |
 | Decision memo | [04_decision.md](04_decision.md) |
 | H1 mechanism (the deployed signal) | [../H1_reversal/00_mechanism.md](../H1_reversal/00_mechanism.md) |
 | Portfolio aggregation (how H1+H2 combine) | [../portfolio/01_signal_aggregation.md](../portfolio/01_signal_aggregation.md) |

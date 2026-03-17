@@ -82,7 +82,7 @@ Adding the full M_t composite (C3) after C2 regime gate:
 
 C3 adds marginal improvement (Sharpe 3.02 → 3.16, Sortino 3.94 → 4.33) but the difference is small relative to the C2 regime effect. The composite contributes through entry timing but is not the primary driver of risk-adjusted returns.
 
-Full vector tests: [../../H1_reversal/03_results/05_vector_tests.md](../../H1_reversal/03_results/05_vector_tests.md).
+Full vector tests: [../../H1_reversal/02_Candidates/Strategy/01_vector_tests.md](../../H1_reversal/02_Candidates/Strategy/01_vector_tests.md).
 
 ---
 
@@ -92,4 +92,4 @@ Full vector tests: [../../H1_reversal/03_results/05_vector_tests.md](../../H1_re
 |------|---------|
 | [00_mechanism.md](00_mechanism.md) | M_t mechanism theory |
 | [01_proxy_universe.md](01_proxy_universe.md) | Component proxy specs |
-| [../../H1_reversal/03_results/05_vector_tests.md](../../H1_reversal/03_results/05_vector_tests.md) | Full vector test (C3 contribution) |
+| [../../H1_reversal/02_Candidates/Strategy/01_vector_tests.md](../../H1_reversal/02_Candidates/Strategy/01_vector_tests.md) | Full vector test (C3 contribution) |
