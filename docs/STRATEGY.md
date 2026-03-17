@@ -7,7 +7,7 @@ Crypto markets exhibit a systematic pattern: when new information arrives (macro
 This is the **transitional-drift momentum** signal: the expected return of an asset while market participants are still in the process of updating their expectations, conditioned on no expectation-invalidating information arriving in the interim. Cross-sectional momentum effects in crypto markets are well-documented empirically (Liu & Tsyvinski 2021; Cong et al. 2021), consistent with the theoretical mechanism described here.
 
 Three necessary conditions must hold simultaneously:
-1. **Drift exists** — there is incomplete expectation adjustment (measured by C1 momentum signal)
+1. **Drift exists** — the asset is positioned for recovery (measured by C1 reversal+stability signal)
 2. **Low hazard** — the probability of expectation-invalidating information is low (measured by λ_t)
 3. **Early diffusion** — the drift is not yet spent (measured by M_t < MAX_MATURITY)
 
@@ -22,16 +22,28 @@ PositionScore_i = C1_i × exp(−λ_t) × (1 − M_t_i)
 This implements the theoretical expected-drift formula:
 `E[drift] = α × (1 − M_t) × e^(−λ_t × τ)`
 
-### C1 — Alpha Signal (Asset-Specific Momentum)
+### C1 — Alpha Signal (Reversal + Stability)
 
-C1 captures the magnitude of asset-specific continuation strength relative to the cross-section. It is a cross-sectionally z-normalized weighted sum of return horizons:
+C1 is a GP-selected combination signal validated on Binance historical data (Oct 2024 – Jan 2025).
+It selects cross-sectional laggards with low realized volatility — assets that have underperformed the
+universe recently AND are stable (low vol), expected to mean-revert over the next 4h.
 
 ```
-raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h − median_r2h)
-C1_i  = (raw_i − mean(raw)) / std(raw)
+raw_i        = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h − median_r2h)
+neg_c1_z_i   = CS_z(−raw_i)              [H1: recent laggards]
+neg_vol_z_i  = CS_z(−realized_vol_6h_i)  [H5: low-vol stability]
+C1_i         = 0.70 × neg_c1_z_i + 0.30 × neg_vol_z_i
 ```
 
-The 6-hour horizon receives the highest weight because it captures meaningful trend legs in the 10-day competition window without excessive noise (short horizons) or staleness (24h). The relative strength term uses the cross-sectional median (not BTC directly) to avoid anchoring bias — we measure an asset's outperformance relative to the full universe, not just relative to the market leader.
+**IC validation (4h forward return):**
+- Train (Oct–Nov 2024): IC = +0.047, t = +7.22, IC-Sharpe = +0.190
+- Holdout (Dec–Jan 2025): IC = +0.066, t = +10.59
+- Block resampling: 97.2% of 500 random 10-day windows show positive IC
+
+The H1 reversal component selects assets that underperformed the cross-section — they have not yet
+priced in the ongoing market move and are expected to catch up. The H5 stability filter removes
+high-vol meme coins whose apparent laggard status reflects noise rather than genuine opportunity.
+See `research/07_signal_promotion.md` and `research/04_gp_search/H1_H5_gp_results.md`.
 
 ### λ_t — Market Hazard Rate (Regime-Derived)
 
@@ -146,11 +158,34 @@ All formulas apply a final cross-sectional z-score normalization (doctrine: allo
 
 **Result: no OFI formula passes the decision gate.** Best results in the trending period: G5 IC = +0.008, t = +0.13; G3 IC = +0.008, t = +0.14; G4 IC = +0.005, t = +0.08. All are positive in direction but far below the t > 1.0 significance threshold. The microstructure hypothesis fails at hourly aggregation: sub-hour order flow signal decays completely within the 1h kline, leaving no detectable predictive power over 6h horizons. Note that G1 (pure taker buy ratio) shows negative IC (-0.020, t = -0.34 in Test B), indicating that in this universe, elevated taker buying in the current hour is a reversal signal at the cross-sectional level — consistent with the exhaustion interpretation captured by the M_t maturity filter already in production.
 
-**Exhaustive signal search conclusion:** Three mechanistically distinct families have been tested — cross-sectional price momentum (Phase 1), time-series price momentum (Phase 2), and market microstructure/order flow (Phase 3). No formula from any family achieves IC > 0 and t > 1.0 in the trending period. The strategy's value proposition rests on three components that do not require selection IC:
+**Phase 4 — Reversal and Volatility Signal Discovery (H1–H6):** A compressed research pipeline was run following Systematic Trading Architecture doctrine. Mechanism families H1 (anti-momentum reversal), H2 (BTC leader-laggard), H5 (volatility-adjusted), and H6 (candle persistence) were declared before any data was processed. See `research/01_mechanism_universe.md` and `research/02_proxy_universe.md`.
 
-1. **Regime gating (Sortino):** The HAZARD_DEFENSIVE state (0% exposure when LSI > 0.60) avoids all downside deviation on stressed market days. Binary switching — not signal selection — is what drives Sortino.
-2. **Drawdown control (Calmar):** The -12% kill switch hard-caps max drawdown. A portfolio that earns 5% with a -6% max drawdown scores Calmar = 0.83; extending to -20% drawdown gives Calmar = 0.25.
-3. **Diversified beta exposure in trend regimes:** When TREND_SUPPORTIVE, the strategy holds 5 long positions across the broadest liquid crypto pairs on the exchange. With no detectable selection IC from any tested formula, the C1 signal acts as a diversified broad-market selector, with regime gating as the primary active management mechanism.
+**Key finding:** The original C1 signal had IC = −0.038 at 4h (selecting winners → underperformers). Inverting C1 to select laggards gives IC = +0.042 at 4h. All 5 H1 reversal proxies passed the IC gate (IC > 0.03, t > 1.5). H5_neg_vol (low realized volatility) showed the strongest individual IC (+0.076 at 24h, t = +13.26). H5 Sharpe variants, H6 streak signals, and H2b lagged BTC all failed.
+
+A key mathematical finding: H2a signals (altcoin return minus BTC return, cross-sectionally z-scored) are IDENTICAL to H1 signals, because BTC return is a cross-sectional constant that cancels in z-normalization. H2a provides no independent information.
+
+GP combination search (constrained grid over pairs of terminals, optimizing IC-Sharpe at 4h) selected `0.70 × CS_z(−C1_raw) + 0.30 × CS_z(−realized_vol_6h)`, promoted with train IC = +0.047 (IC-Sharpe +0.190) and holdout IC = +0.066 (t = 10.59). Robustness: 97.2% of 500 random 10-day windows show positive IC. See `research/09_robustness/H1_H5_signal_robustness.md`.
+
+**H2 mechanism test (Step 3D):** The H2 hypothesis predicts that IC of the laggard signal should be higher when BTC has made a large move (expectation diffusion is triggered). Tested by conditioning IC on BTC 2h return magnitude. Result: IC(BTC flat, |r_2h|<0.5%) = +0.024, IC(BTC large up, |r_2h|≥1.5%) = +0.110 — uplift = +0.087, well above the 0.010 confirmation threshold. **H2 mechanism confirmed.** The signal exploits BTC-diffusion lag, not just generic cross-sectional reversal. The raw H2 diffusion gap (btc_r − alt_r, not z-scored) shows identical IC to H1, confirming that the BTC contribution adds information only through conditioning, not through the level of the gap. See `research/05_h2_mechanism_test.md`.
+
+**Vector tests (Steps 3C, 4A, 4B, 5):** A fixed-horizon portfolio backtest (4h hold, top-3 equal weight, Oct 2024–Jan 2025) was run across three configurations — bare signal, +C2 regime gate, +C2+C3 maturity filter. Results:
+
+| Configuration | Sharpe | MaxDD | Hit Rate | Total Return |
+|---|---|---|---|---|
+| Bare C1 (no modifiers) | 1.87 | −34.1% | 51.5% | +59.4% |
+| + C2 regime gate | 3.02 | −28.0% | 47.1% | +119.1% |
+| + C2 + C3 maturity filter | 3.16 | −27.0% | 47.0% | +130.1% |
+
+Step 3C sanity bars: all pass. Step 4A (C2 modifier): MaxDD improvement +17.8% relative (≥10% bar), worst 30d DD improvement +9.1pp (≥5pp bar) — **APPROVED**. Step 4B (C3 pct_rank proxy): IC(fresh bucket, pct_rank<30%) = +0.018, IC(unconditional) = +0.048 — pct_rank proxy **REJECTED** in this trending period. In Oct–Jan trending conditions, extended (high-pct_rank) assets show higher IC (0.052) than fresh ones, consistent with momentum continuation. The pct_rank proxy is regime-specific and does not generalize. The live M_t composite includes funding rate, RSI proxy, and SMA extension in addition to pct_rank; these capture overextension in non-trending conditions and are retained. See `research/06_vector_tests.md`.
+
+**Phases 1–3 conclusion:** Three mechanistically distinct families — cross-sectional price momentum (Phase 1), time-series price momentum (Phase 2), and market microstructure/order flow (Phase 3) — all failed to find signals with IC > 0 and t > 1.0. **Phase 4 reversal research succeeded by inverting the direction of the Phase 1 search.**
+
+The strategy's value proposition now rests on four components:
+
+1. **Validated alpha selection (Sortino/Sharpe):** The promoted C1 signal (IC = +0.057, t = 12.55) selects cross-sectional laggards with low realized volatility, providing genuine cross-sectional alpha at the 4h horizon.
+2. **Regime gating (Sortino):** The HAZARD_DEFENSIVE state (0% exposure when LSI > 0.60) avoids all downside deviation on stressed market days. Binary switching is what drives Sortino — clean zero exposure, not smooth scaling.
+3. **Drawdown control (Calmar):** The -12% kill switch hard-caps max drawdown. A portfolio that earns 5% with a -6% max drawdown scores Calmar = 0.83; extending to -20% drawdown gives Calmar = 0.25.
+4. **Maturity filter (Sortino/Sharpe):** M_t blocks entry into overextended assets (extension from SMA, RSI proxy, pct_rank, funding rate), preventing entry at the tail of a move where risk/reward is worst.
 
 The competition scoring formula (0.4×Sortino + 0.3×Sharpe + 0.3×Calmar) rewards risk-adjusted performance. A strategy that avoids large drawdowns and the worst-vol days will score competitively even without superior selection IC, provided the market direction during the 10-day competition window is non-hostile.
 

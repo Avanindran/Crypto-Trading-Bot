@@ -25,8 +25,8 @@ Run:
   python research/ic_validation_extended.py
 
 Outputs:
-  research/ic_results_extended.md
-  research/charts/ic_multi_horizon.png
+  research/03_validation/ic_results_extended.md
+  research/charts/03_validation/ic_multi_horizon.png
 """
 import csv
 import io
@@ -91,8 +91,8 @@ C1_WEIGHT_R24H  = 0.25
 C1_WEIGHT_CS_RS = 0.10
 
 BINANCE_VISION_BASE = "https://data.binance.vision/data/spot/monthly/klines"
-OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "ic_results_extended.md")
-CHARTS_DIR  = os.path.join(os.path.dirname(__file__), "charts")
+OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "03_validation", "ic_results_extended.md")
+CHARTS_DIR  = os.path.join(os.path.dirname(__file__), "charts", "03_validation")
 
 
 # ── Data Download ──────────────────────────────────────────────────────────────

@@ -509,7 +509,7 @@ def run_validation() -> None:
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
 
-        charts_dir = os.path.join(os.path.dirname(__file__), "charts")
+        charts_dir = os.path.join(os.path.dirname(__file__), "charts", "03_validation")
         os.makedirs(charts_dir, exist_ok=True)
 
         period_ics_all = stats_all.get("period_ics", [])

@@ -43,15 +43,25 @@ WARMUP_PHASE2_GROSS_CAP: float = 0.50
 WARMUP_PHASE2_C1_THRESHOLD: float = 1.20
 
 # ──────────────────────────────────────────────────────────
-# C1 — Alpha Signal Weights (F-layer / signal only, no regime inputs)
-# Formula: C1_i = z_norm(w1*r_30m + w2*r_2h + w3*r_6h + w4*r_24h + w5*cs_rs)
-# Primary horizon is 6h — best signal-to-noise for 10-day competition window.
+# C1 Raw Composite Weights (used internally in signals.py)
+# raw_i = w1*r_30m + w2*r_2h + w3*r_6h + w4*r_24h + w5*(r_2h - median_r2h)
+# This raw composite is NEGATED in the promoted signal (H1 reversal component).
 # ──────────────────────────────────────────────────────────
-C1_WEIGHT_R30M: float = 0.10        # Short-term momentum (noisy at 1-min sampling)
-C1_WEIGHT_R2H: float = 0.20         # Transition signal
-C1_WEIGHT_R6H: float = 0.35         # Primary horizon for 10-day window
-C1_WEIGHT_R24H: float = 0.25        # Directional bias (uses ticker Change field directly)
+C1_WEIGHT_R30M: float = 0.10        # 30m return (noisy at 1-min sampling)
+C1_WEIGHT_R2H: float = 0.20         # 2h return
+C1_WEIGHT_R6H: float = 0.35         # 6h return (primary horizon for 10-day window)
+C1_WEIGHT_R24H: float = 0.25        # 24h return (uses ticker Change field directly)
 C1_WEIGHT_CS_RS: float = 0.10       # Cross-sectional relative strength (vs median)
+
+# ──────────────────────────────────────────────────────────
+# Promoted Signal — GP-selected combination (Phase 3 of research pipeline)
+# Formula: 0.7 × CS_z(−C1_raw) + 0.3 × CS_z(−realized_vol_6h)
+# Validated in: research/03_validation/, research/04_gp_search/
+# Economic description: "buy cross-sectional laggards with low realized volatility"
+# IC at 4h horizon: train +0.047 (t=7.2), holdout +0.066 (t=10.6)
+# ──────────────────────────────────────────────────────────
+ALPHA_WEIGHT_REVERSAL: float = 0.70  # H1 anti-momentum: selects recent cross-sect. laggards
+ALPHA_WEIGHT_STABILITY: float = 0.30 # H5 low-vol anomaly: selects stable low-vol coins
 
 # ──────────────────────────────────────────────────────────
 # Maturity M_t — Diffusion maturity per asset (C3 = 1 − M_t)

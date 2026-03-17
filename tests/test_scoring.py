@@ -55,8 +55,12 @@ class TestC1ZScoreNormalization:
         mean = sum(c1.values()) / len(c1)
         assert abs(mean) < 0.1, f"Expected mean ≈ 0, got {mean}"
 
-    def test_top_performer_highest_c1(self):
-        """Asset with highest momentum should have highest C1 score."""
+    def test_laggard_highest_c1(self):
+        """Cross-sectional laggard (lowest r_6h) should have highest C1 score.
+
+        The promoted signal is H1 reversal: CS_z(−C1_raw).
+        Recent losers are expected to recover — they receive the highest scores.
+        """
         features = {
             "LOW/USD": _make_feature(r_6h=0.001),
             "MID/USD": _make_feature(r_6h=0.05),
@@ -67,8 +71,8 @@ class TestC1ZScoreNormalization:
         cs = _make_cs()
         c1 = compute_c1_scores(features, cs)
 
-        assert c1.get("HIGH/USD", -999) > c1.get("MID/USD", -999)
-        assert c1.get("MID/USD", -999) > c1.get("LOW/USD", -999)
+        assert c1.get("LOW/USD", -999) > c1.get("MID/USD", -999)
+        assert c1.get("MID/USD", -999) > c1.get("HIGH/USD", -999)
 
     def test_insufficient_pairs_returns_empty(self):
         """Need at least 2 pairs for z-score normalization."""

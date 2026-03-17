@@ -2,8 +2,8 @@
 research/generate_charts.py — Generate strategy evaluation charts for judges.
 
 Produces:
-  research/charts/equity_curve.png  — Strategy NAV vs BTC buy-and-hold with regime overlay
-  research/charts/drawdown.png      — Portfolio drawdown with risk threshold lines
+  research/charts/deprecated/equity_curve.png  — Strategy NAV vs BTC buy-and-hold with regime overlay (deprecated)
+  research/charts/06_vector_tests/drawdown.png — Portfolio drawdown with risk threshold lines
 
 Uses the same simulation as backtest_simulation.py.
 Requires: matplotlib (pip install matplotlib)
@@ -302,7 +302,7 @@ def generate_charts(
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    equity_path = os.path.join(CHARTS_DIR, "equity_curve.png")
+    equity_path = os.path.join(CHARTS_DIR, "deprecated", "equity_curve.png")
     plt.savefig(equity_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Equity curve saved to {equity_path}")
@@ -340,7 +340,7 @@ def generate_charts(
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    dd_path = os.path.join(CHARTS_DIR, "drawdown.png")
+    dd_path = os.path.join(CHARTS_DIR, "06_vector_tests", "drawdown.png")
     plt.savefig(dd_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Drawdown chart saved to {dd_path}")
