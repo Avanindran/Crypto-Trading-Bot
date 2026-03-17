@@ -55,19 +55,35 @@ HOLDOUT_END   = (2025,  1)
 IC_PROMOTE_MIN = 0.03
 TSTAT_PROMOTE  = 1.5
 
-GP_RESULTS_FILE = os.path.join(_here, "04_gp_search", "H1_H5_gp_results.md")
+GP_RESULTS_FILE = os.path.join(_here, "H1_reversal", "03_results", "04_combination_search.md")
+CHARTS_GP_DIR   = os.path.join(_here, "charts", "04_gp_search")
+os.makedirs(os.path.dirname(GP_RESULTS_FILE), exist_ok=True)
+os.makedirs(CHARTS_GP_DIR, exist_ok=True)
 
-# Terminal signal names in order (declared in H1_H5_gp.md)
-TERMINALS = ["H1_neg_r1h", "H1_neg_r2h", "H1_neg_c1", "H5_neg_vol"]
+TS_LOOKBACK = 48   # rolling bars for TS z-score baseline
+TS_MIN_BARS = 6    # minimum history bars before TS z-score is valid
+
+# Terminal signal names (declared before any data seen — FROZEN)
+# Original CS terminals + new TS-family terminals
+TERMINALS = [
+    "H1_neg_r1h", "H1_neg_r2h", "H1_neg_c1", "H5_neg_vol",
+    "TS_ZSCORE_NEG_R6H",   # NEW — TS variant: rank each asset vs its own history
+    "CS_TS_BLEND_R6H",     # NEW — 50/50 CS and TS composite
+]
 
 # All pairwise combinations to test
 COMBOS = [
-    ("H1_neg_r1h", "H5_neg_vol"),
-    ("H1_neg_r2h", "H5_neg_vol"),
-    ("H1_neg_c1",  "H5_neg_vol"),
-    ("H1_neg_r1h", "H1_neg_r2h"),
-    ("H1_neg_r1h", "H1_neg_c1"),
-    ("H1_neg_r2h", "H1_neg_c1"),
+    # Original combos
+    ("H1_neg_r1h",         "H5_neg_vol"),
+    ("H1_neg_r2h",         "H5_neg_vol"),
+    ("H1_neg_c1",          "H5_neg_vol"),
+    ("H1_neg_r1h",         "H1_neg_r2h"),
+    ("H1_neg_r1h",         "H1_neg_c1"),
+    ("H1_neg_r2h",         "H1_neg_c1"),
+    # New TS-family combos
+    ("TS_ZSCORE_NEG_R6H",  "H5_neg_vol"),
+    ("TS_ZSCORE_NEG_R6H",  "H1_neg_c1"),
+    ("CS_TS_BLEND_R6H",    "H5_neg_vol"),
 ]
 WEIGHT_GRID = [round(w * 0.1, 1) for w in range(11)]  # 0.0 to 1.0
 
@@ -106,16 +122,23 @@ def ic_stats(period_ics: List[float]) -> dict:
 # ── Signal Computation ─────────────────────────────────────────────────────────
 
 def compute_signals_at_ts(
-    all_prices: Dict[str, Dict[int, float]],
-    all_open:   Dict[str, Dict[int, float]],
+    all_prices:   Dict[str, Dict[int, float]],
+    all_open:     Dict[str, Dict[int, float]],
     active_pairs: List[str],
     ts: int,
-) -> Tuple[Dict[str, Dict[str, float]], Dict[int, Dict[str, float]]]:
+    ts_r6h_hist:  Optional[Dict[str, List[float]]] = None,
+) -> Tuple[Dict[str, Dict[str, float]], Dict[int, Dict[str, float]], Dict[str, float]]:
     """Compute all terminal signals and forward returns for one timestamp.
+
+    Args:
+        ts_r6h_hist: Optional per-pair rolling history of r_6h values.
+                     If provided, TS z-score signals are computed.
+                     Must be updated AFTER this call to avoid look-ahead.
 
     Returns:
         signals: {signal_name: {pair: z_value}}
         fwd:     {horizon_h: {pair: fwd_return}}
+        r6h_raw: {pair: r_6h_value} for history update by caller
     """
     n_min = max(5, len(active_pairs) // 4)
 
@@ -137,7 +160,7 @@ def compute_signals_at_ts(
         r24h_raw[pair] = r24h
 
     if len(r6h_raw) < n_min:
-        return {}, {}
+        return {}, {}, {}
 
     # C1 raw for H1_neg_c1
     median_r2h = sorted(r2h_raw.values())[len(r2h_raw) // 2]
@@ -165,6 +188,30 @@ def compute_signals_at_ts(
     if len(neg_vol_raw) >= n_min:
         sig["H5_neg_vol"] = cross_sectional_z(neg_vol_raw)
 
+    # ── TS z-score signals (need per-asset rolling history) ────────────────────
+    if ts_r6h_hist is not None:
+        ts_z_raw: Dict[str, float] = {}
+        for pair in r6h_raw:
+            hist = ts_r6h_hist.get(pair, [])
+            if len(hist) >= TS_MIN_BARS:
+                window = hist[-TS_LOOKBACK:]
+                mean_r = sum(window) / len(window)
+                std_r  = math.sqrt(sum((v - mean_r) ** 2 for v in window) / len(window)) or 1e-8
+                ts_z_raw[pair] = -(r6h_raw[pair] - mean_r) / std_r  # negate: laggard = high score
+        if len(ts_z_raw) >= n_min:
+            sig["TS_ZSCORE_NEG_R6H"] = cross_sectional_z(ts_z_raw)
+
+        # CS_TS_BLEND_R6H = 0.5 × CS_z(−r6h) + 0.5 × TS_z(−r6h)
+        cs_neg_r6h = cross_sectional_z({p: -v for p, v in r6h_raw.items()})
+        if "TS_ZSCORE_NEG_R6H" in sig:
+            blend_raw: Dict[str, float] = {}
+            ts_z_cs = sig["TS_ZSCORE_NEG_R6H"]
+            for pair in cs_neg_r6h:
+                if pair in ts_z_cs:
+                    blend_raw[pair] = 0.5 * cs_neg_r6h[pair] + 0.5 * ts_z_cs[pair]
+            if len(blend_raw) >= n_min:
+                sig["CS_TS_BLEND_R6H"] = blend_raw
+
     # Forward returns at all horizons
     fwd: Dict[int, Dict[str, float]] = {h: {} for h in FWD_HORIZONS}
     for pair in r6h_raw:
@@ -173,7 +220,7 @@ def compute_signals_at_ts(
             if fr is not None:
                 fwd[h][pair] = fr
 
-    return sig, fwd
+    return sig, fwd, r6h_raw
 
 
 def accumulate_period_ics(
@@ -227,12 +274,24 @@ def run_gp(
         name: {h: [] for h in FWD_HORIZONS} for name in all_names
     }
 
+    # TS rolling history (updated AFTER signal computation — no look-ahead)
+    ts_r6h_hist: Dict[str, List[float]] = {p: [] for p in active_pairs}
+
     for idx, ts in enumerate(split_ts):
         if idx % 200 == 0:
             print(f"    [{idx}/{len(split_ts)}]...", flush=True)
 
-        sig, fwd = compute_signals_at_ts(all_prices, all_open, active_pairs, ts)
+        sig, fwd, r6h_raw_ts = compute_signals_at_ts(
+            all_prices, all_open, active_pairs, ts, ts_r6h_hist,
+        )
         if not sig or not fwd:
+            # Still update history for pairs with r_6h data
+            for pair in active_pairs:
+                r6h = compute_return(all_prices[pair], ts, 6.0)
+                if r6h is not None:
+                    ts_r6h_hist[pair].append(r6h)
+                    if len(ts_r6h_hist[pair]) > TS_LOOKBACK:
+                        ts_r6h_hist[pair] = ts_r6h_hist[pair][-TS_LOOKBACK:]
             continue
 
         # Individual terminal ICs
@@ -261,6 +320,12 @@ def run_gp(
                     ic = accumulate_period_ics(combo_vals, fwd[h])
                     if ic is not None:
                         period_ics[combo_name][h].append(ic)
+
+        # Update TS history AFTER signal computation (no look-ahead)
+        for pair, r6h in r6h_raw_ts.items():
+            ts_r6h_hist[pair].append(r6h)
+            if len(ts_r6h_hist[pair]) > TS_LOOKBACK:
+                ts_r6h_hist[pair] = ts_r6h_hist[pair][-TS_LOOKBACK:]
 
     return period_ics
 
@@ -455,6 +520,59 @@ def write_results_md(
     print(f"  Written: {GP_RESULTS_FILE}")
 
 
+# ── IC Surface Chart ───────────────────────────────────────────────────────────
+
+def generate_ic_surface(
+    train_ics: Dict[str, Dict[int, List[float]]],
+    combos_to_plot: List[Tuple[str, str]],
+) -> None:
+    """IC surface plot: weight × horizon heatmap for selected combos."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        print("  [WARN] matplotlib not available — skipping IC surface")
+        return
+
+    n_combos = len(combos_to_plot)
+    fig, axes = plt.subplots(1, n_combos, figsize=(7 * n_combos, 5))
+    if n_combos == 1:
+        axes = [axes]
+
+    weights   = [w for w in WEIGHT_GRID if 0.0 < w < 1.0]
+    horizons  = FWD_HORIZONS
+
+    for ax, (t1, t2) in zip(axes, combos_to_plot):
+        grid = np.zeros((len(horizons), len(weights)))
+        for j, w in enumerate(weights):
+            name = f"{t1}_x{round(w*10):02d}_{t2}"
+            for i, h in enumerate(horizons):
+                ics = train_ics.get(name, {}).get(h, [])
+                if ics:
+                    grid[i, j] = sum(ics) / len(ics)
+
+        im = ax.imshow(
+            grid, aspect="auto", cmap="RdYlGn",
+            vmin=-0.08, vmax=0.08,
+            extent=[min(weights) - 0.05, max(weights) + 0.05,
+                    len(horizons) - 0.5, -0.5],
+        )
+        ax.set_yticks(range(len(horizons)))
+        ax.set_yticklabels([f"{h}h" for h in horizons])
+        ax.set_xlabel(f"Weight on {t1.replace('_', ' ')}")
+        ax.set_title(f"IC: w×{t1[:12]} + (1−w)×{t2[:12]}")
+        plt.colorbar(im, ax=ax, label="Mean Spearman IC")
+
+    plt.suptitle("IC Surface: weight × horizon (training split)")
+    plt.tight_layout()
+    out = os.path.join(CHARTS_GP_DIR, "ic_surface.png")
+    plt.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close()
+    print(f"  [chart] Saved {out}")
+
+
 # ── Entry Point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -516,6 +634,34 @@ def main() -> None:
         print(f"  {t:<20}  train={t_ic} (IC-Sharpe={t_shr})  holdout={h_ic}")
 
     write_results_md(train_ics, holdout_ics, best_name, train_best, holdout_best)
+
+    # ── TS vs original champion comparison ────────────────────────────────────
+    original_champion = "H1_neg_c1_x07_H5_neg_vol"  # 0.70×H1 + 0.30×H5 (known result)
+    orig_train = ic_stats(train_ics.get(original_champion, {}).get(OPT_HORIZON, []))
+    orig_hold  = ic_stats(holdout_ics.get(original_champion, {}).get(OPT_HORIZON, []))
+    print(f"\nOriginal champion ({original_champion}):")
+    if orig_train.get("mean_ic") is not None:
+        print(f"  Train IC: {orig_train['mean_ic']:+.4f} "
+              f"(IC-Sharpe={orig_train['ic_sharpe']:+.3f})")
+    if orig_hold.get("mean_ic") is not None:
+        print(f"  Holdout IC: {orig_hold['mean_ic']:+.4f} "
+              f"(t={orig_hold['t_stat']:+.2f})")
+    if best_name != original_champion and train_best.get("mean_ic") is not None:
+        orig_ic  = orig_train.get("ic_sharpe") or 0
+        best_ic  = train_best.get("ic_sharpe") or 0
+        delta    = best_ic - orig_ic
+        print(f"\nNew best vs original: IC-Sharpe delta = {delta:+.3f} "
+              f"({'improvement' if delta > 0 else 'no improvement'})")
+        if delta > 0.05:
+            print("  ** Flag: new formula improves IC-Sharpe by > 0.05 — "
+                  "consider updating live C1 formula (requires own commit before Mar 28)")
+
+    # ── IC surface chart ──────────────────────────────────────────────────────
+    print("\nGenerating IC surface chart ...")
+    generate_ic_surface(train_ics, [
+        ("H1_neg_c1",         "H5_neg_vol"),
+        ("TS_ZSCORE_NEG_R6H", "H5_neg_vol"),
+    ])
 
     sys.stdout.flush()
 

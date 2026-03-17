@@ -713,7 +713,7 @@ def main() -> None:
         mat_result,
         nav_bare, nav_c2, nav_c2c3,
     )
-    out_md = os.path.join(_here, "06_vector_tests.md")
+    out_md = os.path.join(_here, "H1_reversal", "03_results", "05_vector_tests.md")
     with open(out_md, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"\n  Wrote {out_md}")

@@ -64,7 +64,7 @@ BTC_FLAT_THRESH     = 0.005   # |btc_r_2h| < 0.5%  → BTC flat
 BTC_MODERATE_THRESH = 0.015   # 0.5% ≤ |btc_r_2h| < 1.5% → moderate
 # Anything ≥ 1.5% → BTC large move
 
-OUTPUT_FILE  = os.path.join(_here, "05_h2_mechanism_test.md")
+OUTPUT_FILE  = os.path.join(_here, "H2_transitional_drift", "03_results", "02_mechanism_test.md")
 CHART_FILE   = os.path.join(_here, "charts", "05_h2_mechanism", "ic_btc_conditioned.png")
 
 MIN_BUCKET_N = 20  # Minimum per-timestamp count in bucket for t-stat to be meaningful

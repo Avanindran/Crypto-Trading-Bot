@@ -1,28 +1,30 @@
 """
 research/signal_search.py — Multi-hypothesis, multi-horizon IC validation.
 
-Tests H1 (short-term reversal), H2 (BTC leader-laggard), H5 (vol-adjusted
-momentum), and H6 (candle persistence) signal families declared in:
-  01_mechanism_universe.md   — mechanism reasoning
-  02_proxy_universe.md       — pre-committed proxy inventory (FROZEN)
+Tests all pre-committed proxy families across three conditions:
+  C1 Alpha:   H1 CS reversal, H1 TS reversal, H2a/H2c/H2d BTC-diffusion,
+              H5 vol-adjusted stability, H6 candle persistence
+  C2 Hazard:  tested separately in modifier_screen.py
+  C3 Maturity: tested separately in modifier_screen.py
 
 Each proxy is tested at 6 forward horizons: 1h, 2h, 4h, 6h, 12h, 24h.
-The IC decay profile (IC vs horizon) reveals the optimal holding period for
-any signal that passes the gate.
+IC decay profile (IC vs horizon) reveals optimal holding period.
 
-Decision gate (from 02_proxy_universe.md):
-  IC > 0  AND  t > 1.0  at ANY of the 6 forward horizons  →  PASS
-  IC > 0.03  AND  t > 1.5  →  promotion-quality
+Decision gate:
+  IC > 0  AND  t > 1.0  at ANY horizon  →  PASS
+  IC > 0.03  AND  t > 1.5              →  promotion-quality
 
 Run:
-  python research/signal_search.py
+  python -X utf8 research/signal_search.py
 
 Outputs:
-  research/03_validation/H1_reversal.md
-  research/03_validation/H2_btc_laggard.md
-  research/03_validation/H5_voladj_momentum.md
-  research/03_validation/H6_streak_persistence.md
-  research/charts/04_gp_search/ic_signal_search.png
+  research/H1_reversal/03_results/01_ic_results.md       (H1 CS family)
+  research/H1_reversal/03_results/02_stability_screen.md (H5 family)
+  research/H1_reversal/03_results/03_rejected_proxies.md (H6 family)
+  research/H1_reversal/03_results/05_ts_variant_search.md (TS + H2c/H2d new proxies)
+  research/H2_transitional_drift/03_results/01_ic_results.md (H2a collapse + H2b)
+  research/charts/03_validation/ic_heatmap.png           (signal × horizon heatmap)
+  research/charts/03_validation/ic_decay.png             (IC decay line chart)
 """
 
 import math
@@ -58,16 +60,45 @@ FWD_HORIZONS    = [1, 2, 4, 6, 12, 24]   # forward return windows (hours)
 STREAK_WINDOW   = 6                       # bars for H6 candle persistence
 H6_TS_LOOKBACK  = 48                      # bars for H6 TS z-score baseline
 VOL_MIN_BARS    = 3                       # minimum bars to compute realized vol
+TS_LOOKBACK     = 48                      # bars for TS z-score history
+TS_MIN_BARS     = 6                       # minimum bars to compute TS z-score
+BETA_LOOKBACK   = 48                      # bars for rolling beta estimation
+BETA_MIN_BARS   = 10                      # minimum pairs for valid beta
 
 IC_GATE_MIN     = 0.0                     # minimum IC to pass gate
 TSTAT_GATE_MIN  = 1.0                     # minimum |t| to pass gate
 IC_PROMOTE_MIN  = 0.03                    # IC for promotion-quality
 TSTAT_PROMOTE   = 1.5                     # t for promotion-quality
 
-VALIDATION_DIR = os.path.join(_here, "03_validation")
-CHARTS_DIR     = os.path.join(_here, "charts", "04_gp_search")
-os.makedirs(VALIDATION_DIR, exist_ok=True)
-os.makedirs(CHARTS_DIR,     exist_ok=True)
+# Output directories
+H1_RESULTS_DIR   = os.path.join(_here, "H1_reversal", "03_results")
+H2_RESULTS_DIR   = os.path.join(_here, "H2_transitional_drift", "03_results")
+CHARTS_VAL_DIR   = os.path.join(_here, "charts", "03_validation")
+os.makedirs(H1_RESULTS_DIR, exist_ok=True)
+os.makedirs(H2_RESULTS_DIR, exist_ok=True)
+os.makedirs(CHARTS_VAL_DIR, exist_ok=True)
+
+
+# ── Signal universe (all CS-normalized outputs) ────────────────────────────────
+
+CS_SIGNALS = [
+    # ── H1: Cross-sectional reversal (existing PROMOTED signals) ─────────────
+    "H1_neg_r1h", "H1_neg_r2h", "H1_neg_r6h", "H1_neg_r24h", "H1_neg_c1",
+    # ── H2a: BTC catch-up, CS-framed (collapses to H1) ───────────────────────
+    "H2a_neg_rel_btc_r1h", "H2a_neg_rel_btc_r2h", "H2a_neg_rel_btc_r6h",
+    # ── H2c: beta-adjusted divergence (NEW — non-collapsed H2 proxy) ─────────
+    "H2c_beta_adj_gap",
+    # ── H2d: BTC-gated H1 (NEW — operationalises mechanism test finding) ─────
+    "H2d_btcgated_h1",
+    # ── H5: vol-adjusted stability filter ────────────────────────────────────
+    "H5_sharpe_6h", "H5_sharpe_24h", "H5_sortino_6h", "H5_neg_vol",
+    # ── H6: candle persistence (expected to fail) ────────────────────────────
+    "H6_up_pct_6h", "H6_streak_ts", "H6_body_mean_6h",
+    # ── H1_TS: time-series overshoot (NEW — TS variants of H1 mechanism) ─────
+    "TS_zscore_neg_r6h", "TS_zscore_neg_r2h", "TS_bb_dist", "CS_TS_blend_r6h",
+]
+
+H2B_SIGNALS = ["H2b_btc_lag1h", "H2b_btc_lag2h"]
 
 
 # ── Volatility Helpers ─────────────────────────────────────────────────────────
@@ -104,6 +135,44 @@ def downside_vol(prices: Dict[int, float], ts: int, hours: int = 6) -> float:
     return math.sqrt(sum(r ** 2 for r in neg_rets) / len(neg_rets)) or 1e-6
 
 
+# ── Time-Series and Beta Helpers ───────────────────────────────────────────────
+
+def ts_zscore(value: float, history: List[float], min_bars: int = TS_MIN_BARS) -> Optional[float]:
+    """Time-series z-score of value relative to accumulated history.
+
+    Returns None if insufficient observations. History should NOT include
+    the current value (call this BEFORE appending value to history).
+    """
+    if len(history) < min_bars:
+        return None
+    mean = sum(history) / len(history)
+    std  = math.sqrt(sum((v - mean) ** 2 for v in history) / len(history)) or 1e-8
+    return (value - mean) / std
+
+
+def rolling_beta(
+    pair_r1h_hist: List[Tuple[float, float]],
+    min_obs: int = BETA_MIN_BARS,
+) -> Optional[float]:
+    """Rolling OLS beta: slope of asset_r1h on btc_r1h.
+
+    pair_r1h_hist: list of (btc_r1h, asset_r1h) tuples from past observations.
+    Returns beta = Cov(r_i, r_btc) / Var(r_btc). None if insufficient data.
+    """
+    if len(pair_r1h_hist) < min_obs:
+        return None
+    btc_vals = [p[0] for p in pair_r1h_hist]
+    ast_vals = [p[1] for p in pair_r1h_hist]
+    n = len(btc_vals)
+    btc_mean = sum(btc_vals) / n
+    ast_mean = sum(ast_vals) / n
+    var_btc  = sum((v - btc_mean) ** 2 for v in btc_vals) / n
+    if var_btc < 1e-12:
+        return None
+    cov = sum((btc_vals[i] - btc_mean) * (ast_vals[i] - ast_mean) for i in range(n)) / n
+    return cov / var_btc
+
+
 # ── Statistical Helpers ────────────────────────────────────────────────────────
 
 def pearson_r(xs: List[float], ys: List[float]) -> Optional[float]:
@@ -138,26 +207,10 @@ def ic_stats(period_ics: List[float]) -> dict:
     if n < 3:
         return {"n": n, "mean_ic": None, "t_stat": None, "hit_rate": None}
     mean_ic = sum(period_ics) / n
-    std_ic = math.sqrt(sum((v - mean_ic) ** 2 for v in period_ics) / n) or 1e-8
+    std_ic  = math.sqrt(sum((v - mean_ic) ** 2 for v in period_ics) / n) or 1e-8
     hit_rate = sum(1 for v in period_ics if v > 0) / n
     t = mean_ic / (std_ic / math.sqrt(n))
     return {"n": n, "mean_ic": mean_ic, "t_stat": t, "hit_rate": hit_rate}
-
-
-# ── Cross-sectional signal names ───────────────────────────────────────────────
-
-CS_SIGNALS = [
-    # H1: short-term reversal
-    "H1_neg_r1h", "H1_neg_r2h", "H1_neg_r6h", "H1_neg_r24h", "H1_neg_c1",
-    # H2a: BTC catch-up
-    "H2a_neg_rel_btc_r1h", "H2a_neg_rel_btc_r2h", "H2a_neg_rel_btc_r6h",
-    # H5: vol-adjusted momentum
-    "H5_sharpe_6h", "H5_sharpe_24h", "H5_sortino_6h", "H5_neg_vol",
-    # H6: candle persistence
-    "H6_up_pct_6h", "H6_streak_ts", "H6_body_mean_6h",
-]
-
-H2B_SIGNALS = ["H2b_btc_lag1h", "H2b_btc_lag2h"]
 
 
 # ── Main Analysis ──────────────────────────────────────────────────────────────
@@ -172,10 +225,15 @@ def run_signal_search(
     Dict[str, Dict[int, List[Tuple[float, float]]]],  # h2b_pairs
 ]:
     """
-    Compute per-timestamp Spearman IC for H1/H2a/H5/H6 signals at all horizons.
+    Compute per-timestamp Spearman IC for all signal families at all horizons.
 
-    For H2b (lagged BTC predictor), accumulate (btc_lag_ret, mean_fwd_ret)
-    pairs for Pearson correlation at analysis time.
+    New in this version:
+      H2c_beta_adj_gap  — rolling-beta-adjusted BTC gap (non-collapsed H2 proxy)
+      H2d_btcgated_h1   — H1 signal masked to 0 when BTC flat (|r_BTC,2h| < 0.5%)
+      TS_zscore_neg_r6h — time-series z-score of 6h return vs own 48h history
+      TS_zscore_neg_r2h — time-series z-score of 2h return vs own 48h history
+      TS_bb_dist        — negative Bollinger band distance (price vs rolling SMA/std)
+      CS_TS_blend_r6h   — 0.5×CS_z(−r_6h) + 0.5×TS_z(−r_6h)
 
     Returns:
         cs_period_ics:  {signal: {horizon_h: [ic_at_ts, ...]}}
@@ -185,10 +243,6 @@ def run_signal_search(
     if not active_pairs:
         return {}, {}
 
-    # Use UNION of all timestamps (not intersection) so that pairs listed partway
-    # through the test period contribute their full available history.
-    # Per-pair data access via compute_return() already handles missing timestamps
-    # gracefully (returns None), so the inner loop skips missing pairs per ts.
     all_ts_union: set = set()
     for sym in active_pairs:
         all_ts_union.update(all_prices[sym].keys())
@@ -196,7 +250,7 @@ def run_signal_search(
     btc_prices = all_prices.get("BTCUSDT", {})
     n_min      = max(5, len(active_pairs) // 4)
 
-    print(f"  Active pairs: {len(active_pairs)}, common timestamps: {len(common_ts)}")
+    print(f"  Active pairs: {len(active_pairs)}, timestamps: {len(common_ts)}")
 
     cs_period_ics: Dict[str, Dict[int, List[float]]] = {
         s: {h: [] for h in FWD_HORIZONS} for s in CS_SIGNALS
@@ -205,8 +259,13 @@ def run_signal_search(
         s: {h: [] for h in FWD_HORIZONS} for s in H2B_SIGNALS
     }
 
-    # H6 TS z-score history per pair (up_pct_6h vs own baseline)
-    h6_up_pct_hist: Dict[str, List[float]] = {p: [] for p in active_pairs}
+    # ── Per-asset TS history dicts (updated at END of each ts — no look-ahead) ─
+    h6_up_pct_hist:  Dict[str, List[float]] = {p: [] for p in active_pairs}
+    ts_r6h_hist:     Dict[str, List[float]] = {p: [] for p in active_pairs}
+    ts_r2h_hist:     Dict[str, List[float]] = {p: [] for p in active_pairs}
+    ts_price_hist:   Dict[str, List[float]] = {p: [] for p in active_pairs}
+    # beta_hist: per asset, list of (btc_r1h, asset_r1h) pairs from PAST observations
+    beta_hist: Dict[str, List[Tuple[float, float]]] = {p: [] for p in active_pairs}
 
     for idx, ts in enumerate(common_ts):
         if idx % 500 == 0:
@@ -231,6 +290,12 @@ def run_signal_search(
             r24h_raw[pair] = r24h
 
         if len(r6h_raw) < n_min:
+            # Still update histories to avoid data gaps
+            for pair in r6h_raw:
+                if all_prices[pair].get(ts) is not None:
+                    ts_price_hist[pair].append(all_prices[pair][ts])
+                    if len(ts_price_hist[pair]) > TS_LOOKBACK:
+                        ts_price_hist[pair] = ts_price_hist[pair][-TS_LOOKBACK:]
             continue
 
         # ── Forward returns at all horizons ────────────────────────────────────
@@ -254,7 +319,7 @@ def run_signal_search(
                 + C1_WEIGHT_CS_RS * (r2h_raw.get(pair, 0.0) - median_r2h)
             )
 
-        # ── H1: Cross-sectional reversal (CS z-score of negative return) ───────
+        # ── H1: Cross-sectional reversal ────────────────────────────────────────
         h1_signals: Dict[str, Dict[str, float]] = {
             "H1_neg_r1h":  cross_sectional_z({p: -v for p, v in r1h_raw.items()}),
             "H1_neg_r2h":  cross_sectional_z({p: -v for p, v in r2h_raw.items()}),
@@ -263,7 +328,7 @@ def run_signal_search(
             "H1_neg_c1":   cross_sectional_z({p: -v for p, v in c1_raw.items()}),
         }
 
-        # ── H2a: BTC catch-up (altcoins that underperformed BTC) ───────────────
+        # ── H2a: BTC catch-up (CS-framed — mathematically collapses to H1) ─────
         btc_r1h = compute_return(btc_prices, ts, 1.0)
         btc_r2h = compute_return(btc_prices, ts, 2.0)
         btc_r6h = compute_return(btc_prices, ts, 6.0)
@@ -283,8 +348,6 @@ def run_signal_search(
             )
 
         # ── H2b: Lagged BTC predictor (market-level, not cross-sectional) ──────
-        # btc_lag1h: BTC 1h return ending at ts-1h  (= BTC 1h ago)
-        # btc_lag2h: BTC 2h return ending at ts-2h  (= BTC 2h ago)
         btc_lag1h = compute_return(btc_prices, ts - 3_600_000, 1.0)
         btc_lag2h = compute_return(btc_prices, ts - 7_200_000, 2.0)
 
@@ -297,7 +360,36 @@ def run_signal_search(
             if btc_lag2h is not None:
                 h2b_pairs["H2b_btc_lag2h"][h].append((btc_lag2h, mean_fwd))
 
-        # ── H5: Volatility-adjusted momentum ───────────────────────────────────
+        # ── H2c: Beta-adjusted divergence (NEW non-collapsed H2 proxy) ──────────
+        # beta_i × r_BTC,2h − r_i,2h — selects alts that underperformed their
+        # expected BTC-correlated return. Survives CS normalization because beta_i
+        # varies across assets (unlike H2a which uses unit beta implicitly).
+        h2c_raw: Dict[str, float] = {}
+        if btc_r2h is not None:
+            for pair in r2h_raw:
+                beta = rolling_beta(beta_hist.get(pair, []))
+                if beta is not None:
+                    # gap > 0 means alt underperformed its BTC-implied return → buy signal
+                    h2c_raw[pair] = beta * btc_r2h - r2h_raw[pair]
+        h2c_signals: Dict[str, Dict[str, float]] = {}
+        if len(h2c_raw) >= n_min:
+            h2c_signals["H2c_beta_adj_gap"] = cross_sectional_z(h2c_raw)
+
+        # ── H2d: BTC-gated H1 (NEW — conditional on BTC having moved) ───────────
+        # H1 signal fires only when |r_BTC,2h| >= 0.5%. When BTC is flat, both
+        # signals are zeroed. Operationalises the mechanism test finding
+        # (IC uplift +0.087 when BTC moves).
+        h2d_signals: Dict[str, Dict[str, float]] = {}
+        if btc_r2h is not None and abs(btc_r2h) >= 0.005:
+            # BTC has moved — H1 signal is valid
+            h2d_signals["H2d_btcgated_h1"] = cross_sectional_z(
+                {p: -v for p, v in r2h_raw.items()}
+            )
+        else:
+            # BTC flat — zero out signal (no expected diffusion)
+            h2d_signals["H2d_btcgated_h1"] = {p: 0.0 for p in r2h_raw}
+
+        # ── H5: Volatility-adjusted stability filter ────────────────────────────
         h5_raw: Dict[str, Dict[str, float]] = {
             "H5_sharpe_6h": {}, "H5_sharpe_24h": {},
             "H5_sortino_6h": {}, "H5_neg_vol": {},
@@ -350,7 +442,6 @@ def run_signal_search(
             if body_cnt > 0:
                 h6_body_mean[pair] = body_sum / body_cnt
 
-        # H6_streak_ts: TS z-score of up_pct_6h vs own 48-bar history → CS z
         h6_streak_ts_raw: Dict[str, float] = {
             pair: z_score(h6_up_pct[pair], h6_up_pct_hist.get(pair, []))
             for pair in h6_up_pct
@@ -364,18 +455,61 @@ def run_signal_search(
         if len(h6_body_mean) >= n_min:
             h6_signals["H6_body_mean_6h"] = cross_sectional_z(h6_body_mean)
 
-        # Update H6 TS histories after computing signal (no look-ahead)
-        for pair in h6_up_pct:
-            h6_up_pct_hist[pair].append(h6_up_pct[pair])
-            if len(h6_up_pct_hist[pair]) > H6_TS_LOOKBACK:
-                h6_up_pct_hist[pair] = h6_up_pct_hist[pair][-H6_TS_LOOKBACK:]
+        # ── H1_TS: Time-series overshoot variants (NEW) ─────────────────────────
+        # Each asset normalized against its own 48h return/price history.
+        # Complementary to CS variants: CS selects cross-sectional laggards;
+        # TS selects assets whose return is low vs their OWN recent baseline.
+        ts_z_r6h_raw: Dict[str, float] = {}
+        ts_z_r2h_raw: Dict[str, float] = {}
+        ts_bb_raw:    Dict[str, float] = {}
+
+        for pair in r6h_raw:
+            # TS_zscore_neg_r6h: negate first (laggard = below own mean = positive after negate)
+            z6 = ts_zscore(r6h_raw[pair], ts_r6h_hist.get(pair, []))
+            if z6 is not None:
+                ts_z_r6h_raw[pair] = -z6  # negated: below own history → positive
+
+            # TS_zscore_neg_r2h
+            z2 = ts_zscore(r2h_raw[pair], ts_r2h_hist.get(pair, []))
+            if z2 is not None:
+                ts_z_r2h_raw[pair] = -z2
+
+            # TS_bb_dist: (SMA_6h - price_now) / (2 × std_price_24h)
+            price_hist = ts_price_hist.get(pair, [])
+            price_now  = all_prices[pair].get(ts)
+            if price_now is not None and len(price_hist) >= 24:
+                sma6_prices = price_hist[-6:] if len(price_hist) >= 6 else price_hist
+                sma6    = sum(sma6_prices) / len(sma6_prices)
+                p24     = price_hist[-24:]
+                mean24  = sum(p24) / len(p24)
+                std24   = math.sqrt(sum((p - mean24) ** 2 for p in p24) / len(p24)) or 1e-8
+                ts_bb_raw[pair] = (sma6 - price_now) / (2.0 * std24)
+
+        ts_signals: Dict[str, Dict[str, float]] = {}
+        if len(ts_z_r6h_raw) >= n_min:
+            ts_signals["TS_zscore_neg_r6h"] = cross_sectional_z(ts_z_r6h_raw)
+        if len(ts_z_r2h_raw) >= n_min:
+            ts_signals["TS_zscore_neg_r2h"] = cross_sectional_z(ts_z_r2h_raw)
+        if len(ts_bb_raw) >= n_min:
+            ts_signals["TS_bb_dist"] = cross_sectional_z(ts_bb_raw)
+
+        # CS_TS_blend_r6h: average of CS_z(−r_6h) and TS_z(−r_6h)
+        cs_neg_r6h = h1_signals.get("H1_neg_r6h", {})
+        ts_neg_r6h = ts_signals.get("TS_zscore_neg_r6h", {})
+        blend_pairs = [p for p in cs_neg_r6h if p in ts_neg_r6h]
+        if len(blend_pairs) >= n_min:
+            blend_raw = {p: 0.5 * cs_neg_r6h[p] + 0.5 * ts_neg_r6h[p] for p in blend_pairs}
+            ts_signals["CS_TS_blend_r6h"] = cross_sectional_z(blend_raw)
 
         # ── Accumulate per-timestamp IC for all CS signals × horizons ──────────
         all_cs_at_ts: Dict[str, Dict[str, float]] = {}
         all_cs_at_ts.update(h1_signals)
         all_cs_at_ts.update(h2a_signals)
+        all_cs_at_ts.update(h2c_signals)
+        all_cs_at_ts.update(h2d_signals)
         all_cs_at_ts.update(h5_signals)
         all_cs_at_ts.update(h6_signals)
+        all_cs_at_ts.update(ts_signals)
 
         for sig_name, sig_vals in all_cs_at_ts.items():
             if sig_name not in cs_period_ics:
@@ -390,6 +524,36 @@ def run_signal_search(
                 )
                 if ic is not None:
                     cs_period_ics[sig_name][h].append(ic)
+
+        # ── Update per-asset histories (AFTER signal computation — no look-ahead) ─
+        for pair in r6h_raw:
+            # TS return histories
+            ts_r6h_hist[pair].append(r6h_raw[pair])
+            if len(ts_r6h_hist[pair]) > TS_LOOKBACK:
+                ts_r6h_hist[pair] = ts_r6h_hist[pair][-TS_LOOKBACK:]
+
+            ts_r2h_hist[pair].append(r2h_raw[pair])
+            if len(ts_r2h_hist[pair]) > TS_LOOKBACK:
+                ts_r2h_hist[pair] = ts_r2h_hist[pair][-TS_LOOKBACK:]
+
+            # Price history for BB
+            price_now = all_prices[pair].get(ts)
+            if price_now is not None:
+                ts_price_hist[pair].append(price_now)
+                if len(ts_price_hist[pair]) > TS_LOOKBACK:
+                    ts_price_hist[pair] = ts_price_hist[pair][-TS_LOOKBACK:]
+
+            # Beta history: accumulate (btc_r1h, asset_r1h) pairs
+            if btc_r1h is not None and pair in r1h_raw:
+                beta_hist[pair].append((btc_r1h, r1h_raw[pair]))
+                if len(beta_hist[pair]) > BETA_LOOKBACK:
+                    beta_hist[pair] = beta_hist[pair][-BETA_LOOKBACK:]
+
+        # H6 TS history update
+        for pair in h6_up_pct:
+            h6_up_pct_hist[pair].append(h6_up_pct[pair])
+            if len(h6_up_pct_hist[pair]) > H6_TS_LOOKBACK:
+                h6_up_pct_hist[pair] = h6_up_pct_hist[pair][-H6_TS_LOOKBACK:]
 
     return cs_period_ics, h2b_pairs
 
@@ -428,10 +592,11 @@ def write_hypothesis_md(
     hyp_title: str,
     cs_signals: List[str],
     cs_period_ics: Dict[str, Dict[int, List[float]]],
+    output_path: str,
     h2b_pairs: Optional[Dict[str, Dict[int, List[Tuple[float, float]]]]] = None,
 ) -> None:
-    """Write IC decay profile table for one hypothesis family."""
-    filename = os.path.join(VALIDATION_DIR, f"{hyp_id}.md")
+    """Write IC decay profile table for one hypothesis family to output_path."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # Pre-compute stats for all signals
     all_stats: Dict[str, Dict[int, dict]] = {}
@@ -444,8 +609,8 @@ def write_hypothesis_md(
     lines = [
         f"# {hyp_id} — {hyp_title}",
         "",
-        "**Proxy universe:** `research/02_proxy_universe.md` (pre-committed, FROZEN)  ",
-        "**Test period:** Oct 2024–Jan 2025 (trending period, BTC +61% bull run)  ",
+        "**Proxy universe:** pre-committed before IC data observed (frozen)  ",
+        "**Test period:** Oct 2024–Jan 2025 (trending, BTC +61% bull run)  ",
         "**Decision gate:** IC > 0 AND t > 1.0 at any forward horizon  ",
         "**Promotion gate:** IC > 0.03 AND t > 1.5  ",
         "",
@@ -464,8 +629,8 @@ def write_hypothesis_md(
         s_by_h = all_stats[sig]
         gate, promo, best_h = _gate_check(s_by_h)
 
-        cells   = [_fmt_cell(s_by_h[h].get("mean_ic"), s_by_h[h].get("t_stat"))
-                   for h in FWD_HORIZONS]
+        cells    = [_fmt_cell(s_by_h[h].get("mean_ic"), s_by_h[h].get("t_stat"))
+                    for h in FWD_HORIZONS]
         best_str = f"{best_h}h" if best_h is not None else "—"
         gate_str = "**PASS**" if gate else "fail"
 
@@ -482,9 +647,8 @@ def write_hypothesis_md(
             "",
             "## H2b: Lagged BTC Predictor — Pearson Correlation",
             "",
-            "These are market-level signals (same value for all pairs at each timestamp).  ",
-            "Cannot use cross-sectional Spearman IC. Tested as time-series Pearson r:  ",
-            "does btc_lag_ret correlate with mean cross-sectional altcoin forward return?  ",
+            "Market-level signals (same value for all pairs at each timestamp).  ",
+            "Tested as time-series Pearson r: does btc_lag_ret predict mean altcoin return?  ",
             "Gate: Pearson r > 0.05 AND t > 1.0.",
             "",
             "| Signal | 1h | 2h | 4h | 6h | 12h | 24h | Best | Gate |",
@@ -493,9 +657,9 @@ def write_hypothesis_md(
         for sig in H2B_SIGNALS:
             if sig not in h2b_pairs:
                 continue
-            cells    = []
-            best_h   = None
-            best_r   = -999.0
+            cells     = []
+            best_h    = None
+            best_r    = -999.0
             gate_pass = False
             for h in FWD_HORIZONS:
                 pts = h2b_pairs[sig].get(h, [])
@@ -535,18 +699,19 @@ def write_hypothesis_md(
             "**No signals pass the IC gate** (IC>0 AND t>1.0) at any forward horizon.  "
         )
 
-    # n-observation counts for primary signals
+    # Sample sizes
     lines += ["", "## Sample Sizes", ""]
-    lines.append("| Signal | Obs (6h horizon) |")
-    lines.append("|--------|-----------------|")
+    lines.append("| Signal | Obs (4h horizon) | Obs (6h horizon) |")
+    lines.append("|--------|-----------------|-----------------|")
     for sig in cs_signals:
-        n = all_stats[sig][6].get("n", 0)
-        lines.append(f"| `{sig}` | {n} |")
+        n4 = all_stats[sig][4].get("n", 0)
+        n6 = all_stats[sig][6].get("n", 0)
+        lines.append(f"| `{sig}` | {n4} | {n6} |")
 
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    print(f"  Written: {filename}")
+    print(f"  Written: {output_path}")
 
 
 # ── Console Summary ────────────────────────────────────────────────────────────
@@ -559,7 +724,7 @@ def print_summary_table(
     print("\n" + "=" * 72)
     print("SIGNAL SEARCH RESULTS — Best IC across all horizons (trending period)")
     print("=" * 72)
-    print(f"{'Signal':<30} {'BestIC':>8} {'BestH':>6} {'t-stat':>7} {'Gate':>10}")
+    print(f"{'Signal':<35} {'BestIC':>8} {'BestH':>6} {'t-stat':>7} {'Gate':>10}")
     print("-" * 72)
 
     any_pass = False
@@ -575,7 +740,7 @@ def print_summary_table(
                     best_h  = h
 
         if best_ic is None:
-            print(f"  {sig:<30} {'N/A':>8} {'—':>6} {'—':>7} {'fail':>10}")
+            print(f"  {sig:<35} {'N/A':>8} {'—':>6} {'—':>7} {'fail':>10}")
             continue
 
         gate = (best_ic > IC_GATE_MIN
@@ -585,10 +750,9 @@ def print_summary_table(
         promo = (best_ic > IC_PROMOTE_MIN
                  and best_t is not None and abs(best_t) > TSTAT_PROMOTE)
         gate_str = "PROMOTE" if promo else ("PASS" if gate else "fail")
-        print(f"  {sig:<30} {best_ic:+8.4f} {str(best_h)+'h':>6} "
+        print(f"  {sig:<35} {best_ic:+8.4f} {str(best_h)+'h':>6} "
               f"{best_t:+7.2f} {gate_str:>10}")
 
-    # H2b
     print("")
     for sig in H2B_SIGNALS:
         best_r = best_t = best_h = None
@@ -599,38 +763,34 @@ def print_summary_table(
             r = pearson_r([p[0] for p in pts], [p[1] for p in pts])
             if r is None:
                 continue
-            t = t_stat(r, len(pts))
+            tt = t_stat(r, len(pts))
             if best_r is None or r > best_r:
                 best_r = r
-                best_t = t
+                best_t = tt
                 best_h = h
 
         if best_r is None:
-            print(f"  {sig:<30} {'N/A':>8} {'—':>6} {'—':>7} {'fail':>10}")
+            print(f"  {sig:<35} {'N/A':>8} {'—':>6} {'—':>7} {'fail':>10}")
             continue
 
         gate = (best_r > 0.05 and best_t is not None and abs(best_t) > TSTAT_GATE_MIN)
         if gate:
             any_pass = True
         gate_str = "PASS" if gate else "fail"
-        print(f"  {sig:<30} {best_r:+8.4f} {str(best_h)+'h':>6} "
+        print(f"  {sig:<35} {best_r:+8.4f} {str(best_h)+'h':>6} "
               f"{best_t:+7.2f} {gate_str:>10}  [Pearson r]")
 
-    print("=" * 72)
-    if any_pass:
-        print(">> Signal(s) pass IC gate. Proceed to Phase 3 (GP refinement).")
-        print("   Write research/04_gp_search/<H>_gp.md BEFORE running GP.")
-    else:
-        print(">> No signals pass the IC gate at any horizon.")
-        print("   Write research/08_limitations_and_rejections.md.")
     print("=" * 72)
     return any_pass
 
 
-# ── Heatmap Chart ──────────────────────────────────────────────────────────────
+# ── Charts ─────────────────────────────────────────────────────────────────────
 
 def generate_heatmap(cs_period_ics: Dict[str, Dict[int, List[float]]]) -> None:
-    """IC heatmap: signals × forward horizons, colored by IC magnitude."""
+    """IC heatmap: all signals × forward horizons, colored by IC magnitude.
+
+    Families separated by horizontal lines; new TS and H2c/H2d in own sections.
+    """
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -640,9 +800,10 @@ def generate_heatmap(cs_period_ics: Dict[str, Dict[int, List[float]]]) -> None:
         print("  [WARN] matplotlib not available — skipping heatmap")
         return
 
+    all_sigs = CS_SIGNALS  # 21 signals in defined order
     ic_matrix = []
     t_matrix  = []
-    for sig in CS_SIGNALS:
+    for sig in all_sigs:
         row_ic = []
         row_t  = []
         for h in FWD_HORIZONS:
@@ -656,42 +817,116 @@ def generate_heatmap(cs_period_ics: Dict[str, Dict[int, List[float]]]) -> None:
     t_arr  = np.array(t_matrix)
     vmax   = max(0.06, float(np.abs(ic_arr).max()))
 
-    fig, ax = plt.subplots(figsize=(11, 8))
+    n_sigs = len(all_sigs)
+    fig_h  = max(8, n_sigs * 0.45)
+    fig, ax = plt.subplots(figsize=(12, fig_h))
     im = ax.imshow(ic_arr, cmap="RdYlGn", vmin=-vmax, vmax=vmax, aspect="auto")
 
     ax.set_xticks(range(len(FWD_HORIZONS)))
     ax.set_xticklabels([f"{h}h" for h in FWD_HORIZONS])
-    ax.set_yticks(range(len(CS_SIGNALS)))
-    ax.set_yticklabels(CS_SIGNALS, fontsize=8)
+    ax.set_yticks(range(n_sigs))
+    ax.set_yticklabels(all_sigs, fontsize=8)
 
-    # Annotate cells: IC value + star for |t| > 1.0
-    for i in range(len(CS_SIGNALS)):
+    for i in range(n_sigs):
         for j in range(len(FWD_HORIZONS)):
             star = "*" if abs(t_arr[i, j]) > TSTAT_GATE_MIN else ""
             ax.text(j, i, f"{ic_arr[i, j]:+.3f}{star}",
-                    ha="center", va="center", fontsize=7.5, color="black")
+                    ha="center", va="center", fontsize=7, color="black")
 
-    # Horizontal separators between hypothesis families
-    for y in [4.5, 7.5, 11.5]:
+    # Family separators (between groups in CS_SIGNALS order)
+    # H1(0-4), H2a(5-7), H2c(8), H2d(9), H5(10-13), H6(14-16), TS(17-20)
+    for y in [4.5, 7.5, 9.5, 13.5, 16.5]:
         ax.axhline(y, color="white", linewidth=2)
 
-    # Family labels on right
-    for label, y in [("H1 Reversal", 2), ("H2a BTC-laggard", 6),
-                     ("H5 Vol-adj.", 9.5), ("H6 Streak", 13)]:
+    # Family labels (right margin)
+    family_labels = [
+        ("H1 CS Reversal", 2.0),
+        ("H2a BTC-laggard\n(collapses)", 6.0),
+        ("H2c Beta-adj", 8.0),
+        ("H2d BTC-gated", 9.0),
+        ("H5 Vol-adj", 11.5),
+        ("H6 Streak", 15.0),
+        ("H1 TS Overshoot\n(new)", 18.5),
+    ]
+    for label, y in family_labels:
         ax.text(len(FWD_HORIZONS) + 0.05, y, label, va="center",
-                fontsize=8, color="#444", transform=ax.transData)
+                fontsize=7.5, color="#333", transform=ax.transData)
 
-    plt.colorbar(im, ax=ax, label="Mean Spearman IC", shrink=0.8)
+    plt.colorbar(im, ax=ax, label="Mean Spearman IC", shrink=0.7)
     ax.set_title(
-        "Signal IC Decay Profile — H1/H2a/H5/H6\n"
-        "Trending Period Oct 2024–Jan 2025  |  * = |t| > 1.0",
+        "Signal IC Decay Profile — All Families\n"
+        "Oct 2024–Jan 2025 (trending period)  |  * = |t| > 1.0",
         fontsize=11,
     )
     ax.set_xlabel("Forward Return Horizon")
     ax.set_ylabel("Signal")
     plt.tight_layout()
 
-    out = os.path.join(CHARTS_DIR, "ic_signal_search.png")
+    out = os.path.join(CHARTS_VAL_DIR, "ic_heatmap.png")
+    plt.savefig(out, dpi=100, bbox_inches="tight")
+    plt.close()
+    print(f"  Chart saved: {out}")
+
+
+def generate_ic_decay(cs_period_ics: Dict[str, Dict[int, List[float]]]) -> None:
+    """IC decay line chart: IC vs horizon for each signal family.
+
+    Shows how IC changes across 1h–24h horizons. Helps identify optimal
+    holding period. One line per signal, grouped by family colour.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  [WARN] matplotlib not available — skipping decay chart")
+        return
+
+    # Group families with colours
+    families = [
+        ("H1 CS Reversal",    ["H1_neg_r1h", "H1_neg_r2h", "H1_neg_r6h", "H1_neg_c1"],
+         "steelblue",   "-"),
+        ("H2c/H2d BTC proxy", ["H2c_beta_adj_gap", "H2d_btcgated_h1"],
+         "darkorange",  "--"),
+        ("H5 Vol Stability",  ["H5_neg_vol"],
+         "forestgreen", "-"),
+        ("H1 TS Overshoot",   ["TS_zscore_neg_r6h", "TS_zscore_neg_r2h",
+                                "TS_bb_dist", "CS_TS_blend_r6h"],
+         "mediumpurple", "-."),
+        ("H6 Streak (fail)",  ["H6_up_pct_6h", "H6_streak_ts"],
+         "lightcoral",  ":"),
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x_vals = FWD_HORIZONS
+
+    for family_name, sigs, color, ls in families:
+        for sig in sigs:
+            ic_vals = [
+                ic_stats(cs_period_ics.get(sig, {}).get(h, [])).get("mean_ic") or 0.0
+                for h in x_vals
+            ]
+            ax.plot(x_vals, ic_vals, color=color, linestyle=ls,
+                    linewidth=1.5, marker="o", markersize=4, alpha=0.8,
+                    label=f"{sig}")
+
+    ax.axhline(0, color="black", linewidth=0.8, linestyle=":")
+    ax.axhline(IC_PROMOTE_MIN, color="gray", linewidth=0.8, linestyle="--",
+               label=f"Promotion threshold (IC={IC_PROMOTE_MIN})")
+    ax.set_xticks(x_vals)
+    ax.set_xticklabels([f"{h}h" for h in x_vals])
+    ax.set_xlabel("Forward Return Horizon")
+    ax.set_ylabel("Mean Spearman IC")
+    ax.set_title(
+        "IC Decay Profile by Signal Family\n"
+        "Oct 2024–Jan 2025  |  - - = promotion threshold (IC=0.03)",
+        fontsize=11,
+    )
+    ax.legend(fontsize=7, ncol=2, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    out = os.path.join(CHARTS_VAL_DIR, "ic_decay.png")
     plt.savefig(out, dpi=100, bbox_inches="tight")
     plt.close()
     print(f"  Chart saved: {out}")
@@ -700,7 +935,6 @@ def generate_heatmap(cs_period_ics: Dict[str, Dict[int, List[float]]]) -> None:
 # ── Entry Point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    # Ensure UTF-8 output on Windows (avoids UnicodeEncodeError for arrow chars)
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8")
@@ -708,7 +942,7 @@ def main() -> None:
             pass
 
     print("=" * 72)
-    print("signal_search.py -- H1/H2/H5/H6 multi-horizon IC validation")
+    print("signal_search.py -- All proxy families, multi-horizon IC validation")
     print("=" * 72)
 
     print("\nFetching Roostoo universe...")
@@ -726,48 +960,70 @@ def main() -> None:
     covered = sum(1 for p in all_prices.values() if len(p) > 100)
     print(f"  {covered}/{len(pairs)} pairs have sufficient data")
 
-    print("\nRunning signal search (H1, H2, H5, H6 × 6 horizons)...")
+    print("\nRunning signal search (all families × 6 horizons)...")
     cs_period_ics, h2b_pairs = run_signal_search(
         all_prices, all_open, all_high, all_low,
     )
 
-    print("\nWriting validation results...")
+    print("\nWriting IC results to new canonical locations...")
+
+    # H1 CS reversal family
     write_hypothesis_md(
         "H1_reversal",
-        "Short-Term Cross-Sectional Reversal",
+        "Short-Term CS Reversal (H1 Family)",
         ["H1_neg_r1h", "H1_neg_r2h", "H1_neg_r6h", "H1_neg_r24h", "H1_neg_c1"],
         cs_period_ics,
+        output_path=os.path.join(H1_RESULTS_DIR, "01_ic_results.md"),
     )
-    write_hypothesis_md(
-        "H2_btc_laggard",
-        "BTC Leader-Laggard Catch-Up",
-        ["H2a_neg_rel_btc_r1h", "H2a_neg_rel_btc_r2h", "H2a_neg_rel_btc_r6h"],
-        cs_period_ics,
-        h2b_pairs=h2b_pairs,
-    )
+
+    # H5 vol-adjusted stability
     write_hypothesis_md(
         "H5_voladj_momentum",
-        "Volatility-Adjusted Momentum (Sharpe Ranking)",
+        "Volatility-Adjusted Stability Filter (H5 Family)",
         ["H5_sharpe_6h", "H5_sharpe_24h", "H5_sortino_6h", "H5_neg_vol"],
         cs_period_ics,
+        output_path=os.path.join(H1_RESULTS_DIR, "02_stability_screen.md"),
     )
+
+    # H6 candle persistence (rejected)
     write_hypothesis_md(
         "H6_streak_persistence",
-        "Candle Persistence (Streak Consistency)",
+        "Candle Persistence / Streak (H6 Family — Expected to Fail)",
         ["H6_up_pct_6h", "H6_streak_ts", "H6_body_mean_6h"],
         cs_period_ics,
+        output_path=os.path.join(H1_RESULTS_DIR, "03_rejected_proxies.md"),
+    )
+
+    # H2a collapsed + H2b no-lag
+    write_hypothesis_md(
+        "H2_btc_laggard",
+        "BTC Leader-Laggard (H2a Collapsed, H2b No Lag)",
+        ["H2a_neg_rel_btc_r1h", "H2a_neg_rel_btc_r2h", "H2a_neg_rel_btc_r6h"],
+        cs_period_ics,
+        output_path=os.path.join(H2_RESULTS_DIR, "01_ic_results.md"),
+        h2b_pairs=h2b_pairs,
+    )
+
+    # TS variants + H2c/H2d (new proxies)
+    write_hypothesis_md(
+        "H1_TS_and_H2_new",
+        "TS Overshoot Variants (H1_TS) + Non-Collapsed H2 Proxies (H2c/H2d)",
+        ["TS_zscore_neg_r6h", "TS_zscore_neg_r2h", "TS_bb_dist", "CS_TS_blend_r6h",
+         "H2c_beta_adj_gap", "H2d_btcgated_h1"],
+        cs_period_ics,
+        output_path=os.path.join(H1_RESULTS_DIR, "05_ts_variant_search.md"),
     )
 
     any_pass = print_summary_table(cs_period_ics, h2b_pairs)
 
-    print("\nGenerating heatmap...")
+    print("\nGenerating charts...")
     generate_heatmap(cs_period_ics)
+    generate_ic_decay(cs_period_ics)
 
     if any_pass:
-        print("\nNEXT STEP: Write 04_gp_search/<H>_gp.md declaring GP search space,")
-        print("           then run constrained formula grid search.")
+        print("\nNEXT STEP: Run gp_search.py with expanded terminal set (includes TS variants).")
     else:
-        print("\nNEXT STEP: Write 08_limitations_and_rejections.md.")
+        print("\nNEXT STEP: Document failures in limitations files.")
         print("           Strategy deploys with regime gating only.")
 
     sys.stdout.flush()

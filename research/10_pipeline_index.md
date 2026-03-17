@@ -38,28 +38,38 @@ Risk:            3-tier drawdown response (−5% / −8% / −12% kill switch) +
 | Step | Doctrine Name | File | Key Verdict |
 |------|---------------|------|-------------|
 | 0 | OOS reserve | — | Dec–Jan 2025 holdout (implicit) |
-| 1 | Mechanism declaration | [01_mechanism_universe.md](01_mechanism_universe.md) | H1, H2, H5, H6 declared before any data seen |
-| 2 | Proxy commitment | [02_proxy_universe.md](02_proxy_universe.md) | All proxies pre-committed; GP search space declared |
-| 3A | IC testing | [03_validation/](03_validation/) | H1_neg_c1, H5_neg_vol pass; H5_sharpe, H6, H2a/b, F1–F7, G1–G6 all fail |
-| 2B | GP run (after 3A confirms terminals) | [04_gp_search/](04_gp_search/) | 0.70×H1 + 0.30×H5, IC-Sharpe = +0.190 |
-| 3B | Near-duplicate filter | [08_limitations_and_rejections.md](08_limitations_and_rejections.md) | H2a = H1 (mathematical identity) |
-| 3D | H2 mechanism test | [05_h2_mechanism_test.md](05_h2_mechanism_test.md) | H2 CONFIRMED — IC uplift = +0.087 when BTC moves |
-| 3C | Bare signal vector | [06_vector_tests.md](06_vector_tests.md) Part A | PASS (Sharpe=1.87, MaxDD=−34%, HitRate=51.5%) |
-| 4A | C2 regime modifier | [06_vector_tests.md](06_vector_tests.md) Part B | APPROVED (MaxDD −18% relative, worst 30d DD +9.1pp) |
-| 4B | C3 maturity modifier | [06_vector_tests.md](06_vector_tests.md) Part C | pct_rank proxy REJECTED; composite retained with caveat |
-| 5 | Full signal vector | [06_vector_tests.md](06_vector_tests.md) Part D | Monotone Sharpe: 1.87 → 3.02 → 3.16 |
-| 8 | Signal nomination | [07_signal_promotion.md](07_signal_promotion.md) | H1_neg_c1_x07_H5_neg_vol promoted |
+| 1 | Mechanism declaration | [H1_reversal/00_mechanism.md](H1_reversal/00_mechanism.md) / [H2_transitional_drift/00_mechanism.md](H2_transitional_drift/00_mechanism.md) | H1, H2, H5, H6 declared before any data seen |
+| 2 | Proxy commitment | [H1_reversal/01_proxy_universe.md](H1_reversal/01_proxy_universe.md) / [H2_transitional_drift/01_proxy_universe.md](H2_transitional_drift/01_proxy_universe.md) | All proxies pre-committed; GP search space declared |
+| 3A | IC testing | [H1_reversal/03_results/01_ic_results.md](H1_reversal/03_results/01_ic_results.md) | H1_neg_c1, H5_neg_vol pass; H5_sharpe, H6, H2a/b, F1–F7, G1–G6 all fail |
+| 2B | GP run (after 3A confirms terminals) | [H1_reversal/03_results/04_combination_search.md](H1_reversal/03_results/04_combination_search.md) | 0.70×H1 + 0.30×H5, IC-Sharpe = +0.190 |
+| 3B | Near-duplicate filter | [H1_reversal/05_limitations.md](H1_reversal/05_limitations.md) + [H2_transitional_drift/04_decision.md](H2_transitional_drift/04_decision.md) | H2a = H1 (mathematical identity) |
+| 3D | H2 mechanism test | [H2_transitional_drift/03_results/02_mechanism_test.md](H2_transitional_drift/03_results/02_mechanism_test.md) | H2 CONFIRMED — IC uplift = +0.087 when BTC moves |
+| 3C | Bare signal vector | [H1_reversal/03_results/05_vector_tests.md](H1_reversal/03_results/05_vector_tests.md) Part A | PASS (Sharpe=1.87, MaxDD=−34%, HitRate=51.5%) |
+| 4A | C2 regime modifier | [H1_reversal/03_results/05_vector_tests.md](H1_reversal/03_results/05_vector_tests.md) Part B + [overlays/regime/03_decision.md](overlays/regime/03_decision.md) | APPROVED (MaxDD −18% relative, worst 30d DD +9.1pp) |
+| 4B | C3 maturity modifier | [H1_reversal/03_results/05_vector_tests.md](H1_reversal/03_results/05_vector_tests.md) Part C + [overlays/maturity/03_decision.md](overlays/maturity/03_decision.md) | pct_rank proxy REJECTED; composite retained with caveat |
+| 5 | Full signal vector | [H1_reversal/03_results/05_vector_tests.md](H1_reversal/03_results/05_vector_tests.md) Part D | Monotone Sharpe: 1.87 → 3.02 → 3.16 |
+| 6 | Portfolio construction | [overlays/portfolio_construction/01_sizing_schemes.md](overlays/portfolio_construction/01_sizing_schemes.md) | PASS — Kelly Sortino = EW Sortino (10.48); both equal due to MAX_WT cap at 30% |
+| 7 | Regime allocation ladder | [overlays/portfolio_construction/02_regime_allocation.md](overlays/portfolio_construction/02_regime_allocation.md) | PROVISIONAL — Gate 1 fail (+3% Calmar uplift vs 10% bar); Gate 2 pass (+37% MaxDD); Sortino +10% favours retention |
+| 8 | Signal nomination | [H1_reversal/04_decision.md](H1_reversal/04_decision.md) | H1_neg_c1_x07_H5_neg_vol promoted |
 | 9 | Strategy assembly | `bot/strategy/signals.py` | Deployed |
-| 10 | Strategy backtest | `backtest_simulation.py` + `backtest_results.md` | Full strategy test with regime + maturity |
-| 12 | Robustness validation | [09_robustness/](09_robustness/) | 97.2% block-resample; IC positive at all weight perturbations |
+| 10 | Strategy backtest | [H1_reversal/03_results/06_backtest.md](H1_reversal/03_results/06_backtest.md) | Pre-fee return +16.4% (promoted signal); OOS split included |
+| 12 | Robustness validation | [H1_reversal/03_results/07_robustness.md](H1_reversal/03_results/07_robustness.md) | 97.2% block-resample; IC positive at all weight perturbations |
+
+**Backtest correction note (2026-03-17):** The original `backtest_simulation.py` used the pre-research
+momentum direction (`cross_sectional_z(r6h_raw)` — selecting winners, IC = −0.038). Updated to the
+promoted signal (0.70×H1_reversal + 0.30×H5_low_vol). Pre-fee return changed from −31.4% to +16.4%.
+
+---
 
 **Supplementary (not part of pipeline narrative):**
 
 | File | Content |
 |------|---------|
 | [00_objective_and_constraints.md](00_objective_and_constraints.md) | Competition objective, admissibility criteria, failure documentation policy |
-| [08_limitations_and_rejections.md](08_limitations_and_rejections.md) | All rejected proxies with economic explanations; research limitations |
-| `backtest_results.md` | Full strategy backtest outputs |
+| [00_mechanism_registry.md](00_mechanism_registry.md) | Mechanism status tracker (single source of truth) |
+| [H1_reversal/05_limitations.md](H1_reversal/05_limitations.md) | H1 limitations and caveats |
+| [H2_transitional_drift/05_limitations.md](H2_transitional_drift/05_limitations.md) | H2 limitations and open problems |
+| [portfolio/01_signal_aggregation.md](portfolio/01_signal_aggregation.md) | H1+H2 dual-engine framework (target state) |
 | `03_validation/ic_results_extended.md` | Extended IC tests across 67 pairs and test conditions |
 | `03_validation/ic_results.md` | Initial IC validation (10-pair universe, early run) |
 | `charts/03_validation/` | IC time-series and multi-horizon charts (H1/H5 validation) |
