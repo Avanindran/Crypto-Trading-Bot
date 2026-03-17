@@ -113,17 +113,33 @@ Over the 4-month test period (Oct 2024 – Jan 2025), the strategy produced a ne
 
 ### Signal Validation
 
-An extended IC test was conducted across 66 pairs and three conditions: (A) current period Dec 2025–Feb 2026, (B) trending period Oct 2024–Jan 2025 (BTC +61% bull run), and (C) regime-conditional (TREND-eligible hours, BTC vol z-score ≤ 0). See `research/ic_validation_extended.py` and `research/ic_results_extended.md` for full results.
+An extended IC test was conducted across 67 pairs and three conditions: (A) current period Dec 2025–Feb 2026, (B) trending period Oct 2024–Jan 2025 (BTC +61% bull run), and (C) regime-conditional (TREND-eligible hours, BTC vol z-score ≤ 0). See `research/ic_validation_extended.py` and `research/ic_results_extended.md` for full results.
 
-**Key finding:** No individual signal (r_1h, r_2h, r_6h, r_24h) shows positive cross-sectional IC in any test condition across 66 pairs. All ICs are mildly negative (range: -0.011 to -0.066), confirming no reliable cross-sectional momentum signal. The C1 composite shows IC = -0.038 in the trending period, IC = -0.034 TREND-conditional. No weight changes to C1 components are warranted.
+**Phase 1 — Cross-sectional signal IC (baseline):** No individual signal (r_1h, r_2h, r_6h, r_24h) shows positive cross-sectional IC in any test condition. All ICs are mildly negative (range: -0.011 to -0.066). The C1 composite shows IC = -0.038 in the trending period (t = -0.65, not statistically significant). Cross-sectional momentum does not have detectable predictive power in this heterogeneous universe.
 
-**Implication for strategy design:** The strategy's value proposition rests on three components that do not require cross-sectional IC:
+**Phase 2 — Time-series (TS) signal search (F1–F7):** Following the Systematic Trading Architecture doctrine (mechanism before formula, search space declared before data processing), seven time-series candidate formulas were tested:
+
+| Formula | Description |
+|---------|-------------|
+| F1 | Per-asset TS z-score of 6h return vs own 48-period baseline |
+| F2 | Per-asset TS z-score of 2h return |
+| F3 | Per-asset TS z-score of 24h return |
+| F4 | TS z-score of (price − MA_24h) / MA_24h — deviation from own price anchor |
+| F5 | Current bar volume / rolling_mean(vol, 48) — flow persistence proxy |
+| F6 | F1 × min(F5, 2.0) — volume-confirmed TS momentum |
+| F7 | 0.35·F1 + 0.35·F2 + 0.20·F3 + 0.10·F4 — multi-horizon TS composite |
+
+All formulas apply a final cross-sectional z-score normalization (doctrine: allocation step normalizes within universe). Decision gate: IC > 0 in Test B (trending period) AND t > 1.0.
+
+**Result: no formula passes the decision gate.** Best result: F5 (volume ratio) IC = +0.018, t = +0.30 in Test B — positive direction but statistically insignificant. All other TS formulas show negative IC in Test B (range: -0.0000 to -0.043). The root-cause hypothesis — that per-asset normalization would remove meme-coin contamination from the cross-section — is not confirmed empirically.
+
+**Implication for strategy design:** The strategy's value proposition rests on three components that do not require selection IC:
 
 1. **Regime gating (Sortino):** The HAZARD_DEFENSIVE state (0% exposure when LSI > 0.60) avoids all downside deviation on stressed market days. Binary switching — not signal selection — is what drives Sortino.
 2. **Drawdown control (Calmar):** The -12% kill switch hard-caps max drawdown. A portfolio that earns 5% with a -6% max drawdown scores Calmar = 0.83; extending to -20% drawdown gives Calmar = 0.25.
-3. **Diversified beta exposure in trend regimes:** When TREND_SUPPORTIVE, the strategy holds 5 long positions across the broadest legitimate crypto pairs on the exchange. With no detectable selection IC, this amounts to diversified broad-market exposure, with regime gating as the primary active management mechanism.
+3. **Diversified beta exposure in trend regimes:** When TREND_SUPPORTIVE, the strategy holds 5 long positions across the broadest liquid crypto pairs on the exchange. With no detectable selection IC from any tested formula, the C1 signal acts as a diversified broad-market selector, with regime gating as the primary active management mechanism.
 
-The competition scoring formula (0.4×Sortino + 0.3×Sharpe + 0.3×Calmar) rewards risk-adjusted performance. A strategy that avoids large drawdowns and the worst-vol days will score competitively even without superior stock-selection IC, provided the market direction during the 10-day competition window is non-hostile.
+The competition scoring formula (0.4×Sortino + 0.3×Sharpe + 0.3×Calmar) rewards risk-adjusted performance. A strategy that avoids large drawdowns and the worst-vol days will score competitively even without superior selection IC, provided the market direction during the 10-day competition window is non-hostile.
 
 ## References
 

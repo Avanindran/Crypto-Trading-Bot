@@ -170,6 +170,46 @@ def load_prices_all_parallel(
     return prices
 
 
+def load_prices_and_volumes_all_parallel(
+    symbols: List[str],
+    months: List[Tuple[int, int]],
+    max_workers: int = 6,
+) -> Tuple[Dict[str, Dict[int, float]], Dict[str, Dict[int, float]]]:
+    """Download close prices AND base-asset volumes for all symbols × months in one pass."""
+    prices:  Dict[str, Dict[int, float]] = {sym: {} for sym in symbols}
+    volumes: Dict[str, Dict[int, float]] = {sym: {} for sym in symbols}
+    tasks = [(sym, yr, mo) for sym in symbols for yr, mo in months]
+
+    def _fetch_pv(task: Tuple[str, int, int]) -> Tuple[str, Dict[int, float], Dict[int, float]]:
+        sym, yr, mo = task
+        mp: Dict[int, float] = {}
+        mv: Dict[int, float] = {}
+        for row in download_monthly_klines(sym, yr, mo):
+            if not row or not row[0].isdigit():
+                continue
+            ts = _normalize_ts(int(row[0]))
+            mp[ts] = float(row[4])
+            if len(row) > 5:
+                try:
+                    mv[ts] = float(row[5])
+                except (ValueError, IndexError):
+                    pass
+        return sym, mp, mv
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_pv, t): t for t in tasks}
+        completed = 0
+        for future in as_completed(futures):
+            sym, mp, mv = future.result()
+            prices[sym].update(mp)
+            volumes[sym].update(mv)
+            completed += 1
+            if completed % max(1, len(tasks) // 10) == 0:
+                print(f"  [{completed}/{len(tasks)} files downloaded]", flush=True)
+
+    return prices, volumes
+
+
 def load_prices_recent(symbol: str, months_back: int) -> Dict[int, float]:
     """Load hourly close prices for the most recent `months_back` months (single symbol)."""
     now = datetime.now(timezone.utc)
@@ -323,18 +363,34 @@ def compute_ic_stats(data: List[Tuple[float, float]], n_pairs: int = 10) -> dict
 
 def run_analysis(
     all_prices: Dict[str, Dict[int, float]],
+    all_volumes: Optional[Dict[str, Dict[int, float]]] = None,
     regime_filter: bool = False,
 ) -> Dict[str, dict]:
     """
     Compute per-signal IC against forward 6h returns.
 
+    Tests both existing cross-sectional signals (r_30m, r_2h, r_6h, r_24h, C1_composite)
+    and new time-series (TS) candidate formulas (F1–F7):
+      F1: z_ts_6h  — per-asset TS z-score of 6h return vs own 48-period baseline
+      F2: z_ts_2h  — per-asset TS z-score of 2h return
+      F3: z_ts_24h — per-asset TS z-score of 24h return
+      F4: ma_ratio — TS z-score of (price - MA_24h)/MA_24h (deviation from own anchor)
+      F5: vol_ratio — current vol / rolling_mean(vol, 48) (flow persistence proxy)
+      F6: z_ts_6h × min(vol_ratio, 2.0) — volume-confirmed TS momentum
+      F7: 0.35·z6h + 0.35·z2h + 0.20·z24h + 0.10·ma_ratio_z (multi-horizon composite)
+
+    All TS signals have a final cross-sectional z-score step (doctrine: allocation normalization).
+
     Args:
         all_prices:    {symbol: {ts_ms: close}}
+        all_volumes:   {symbol: {ts_ms: base_volume}} (optional; F5/F6 require this)
         regime_filter: If True, include only TREND-eligible timestamps (BTC vol z <= 0)
 
     Returns:
         {signal_name: ic_stats_dict}
     """
+    TS_LOOKBACK = 48   # rolling periods for per-asset baseline
+
     active_pairs = [sym for sym, p in all_prices.items() if len(p) > 100]
     if not active_pairs:
         return {}
@@ -345,12 +401,23 @@ def run_analysis(
     # Regime filter state
     vol_history: List[float] = []
 
+    # TS rolling histories per pair (trimmed to TS_LOOKBACK after each update)
+    ts_hist: Dict[str, Dict[str, List[float]]] = {
+        pair: {"r_2h": [], "r_6h": [], "r_24h": [], "ma_ratio": []}
+        for pair in active_pairs
+    }
+    price_hist: Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+    vol_hist:   Dict[str, List[float]] = {pair: [] for pair in active_pairs}
+
     # Accumulators: signal_name → [(signal_z, fwd_ret)]
-    signals_names = ["r_30m", "r_2h", "r_6h", "r_24h", "C1_composite"]
+    signals_names = [
+        "r_30m", "r_2h", "r_6h", "r_24h", "C1_composite",
+        "F1_z6h", "F2_z2h", "F3_z24h", "F4_ma", "F5_vol", "F6_z6h_vol", "F7_composite",
+    ]
     data: Dict[str, List[Tuple[float, float]]] = {s: [] for s in signals_names}
 
     for ts in common_ts:
-        # Compute regime filter (BTC vol z-score)
+        # ── Regime filter ──────────────────────────────────────────────────────
         if regime_filter:
             vol = rolling_btc_vol(btc_prices, ts)
             if vol is not None:
@@ -360,21 +427,18 @@ def run_analysis(
                     vol_history = vol_history[-VOL_LOOKBACK_PERIODS:]
                 vol_z = z_score(vol, prev_hist) if len(prev_hist) >= 3 else 0.0
                 if vol_z > TREND_VOL_Z_THRESHOLD:
-                    continue  # Exclude: high vol = non-TREND period
+                    continue
             else:
-                # Can't compute vol yet — skip to avoid noise
                 continue
 
-        # Compute all returns and forward return per asset
-        r30m_raw:  Dict[str, float] = {}
-        r2h_raw:   Dict[str, float] = {}
-        r6h_raw:   Dict[str, float] = {}
-        r24h_raw:  Dict[str, float] = {}
-        fwd_raw:   Dict[str, float] = {}
+        # ── Compute returns and forward return per asset ────────────────────────
+        r30m_raw: Dict[str, float] = {}
+        r2h_raw:  Dict[str, float] = {}
+        r6h_raw:  Dict[str, float] = {}
+        r24h_raw: Dict[str, float] = {}
+        fwd_raw:  Dict[str, float] = {}
 
         for pair in active_pairs:
-            # Hourly data limitation: 30m return (ts - 1800s) doesn't exist in 1h bars.
-            # Use 1h return as proxy for r_30m in both the individual test and C1 composite.
             r1h  = compute_return(all_prices[pair], ts, 1.0)   # proxy for r_30m
             r2h  = compute_return(all_prices[pair], ts, 2.0)
             r6h  = compute_return(all_prices[pair], ts, 6.0)
@@ -382,51 +446,132 @@ def run_analysis(
             fwd  = compute_forward_return(all_prices[pair], ts, FORWARD_HOURS)
             if None in (r1h, r2h, r6h, r24h, fwd):
                 continue
-            r30m_raw[pair]  = r1h   # 1h proxy
-            r2h_raw[pair]   = r2h
-            r6h_raw[pair]   = r6h
-            r24h_raw[pair]  = r24h
-            fwd_raw[pair]   = fwd
+            r30m_raw[pair] = r1h
+            r2h_raw[pair]  = r2h
+            r6h_raw[pair]  = r6h
+            r24h_raw[pair] = r24h
+            fwd_raw[pair]  = fwd
 
         if len(r6h_raw) < max(3, len(active_pairs) // 2):
-            continue  # Too few pairs
+            continue
 
-        # Cross-sectional z-scores for each horizon
-        z30m  = cross_sectional_z(r30m_raw)
-        z2h   = cross_sectional_z(r2h_raw)
-        z6h   = cross_sectional_z(r6h_raw)
-        z24h  = cross_sectional_z(r24h_raw)
+        # ── Cross-sectional signals (existing) ──────────────────────────────────
+        z30m = cross_sectional_z(r30m_raw)
+        z2h  = cross_sectional_z(r2h_raw)
+        z6h  = cross_sectional_z(r6h_raw)
+        z24h = cross_sectional_z(r24h_raw)
 
-        # C1 composite: weighted raw signal → cross-sectional z-score
-        # Cross-sectional median of r_2h for relative strength term
         median_r2h_vals = sorted(r2h_raw.values())
         median_r2h = median_r2h_vals[len(median_r2h_vals) // 2]
-
         c1_raw_vals: Dict[str, float] = {}
         for pair in r6h_raw.keys():
-            raw = (
+            c1_raw_vals[pair] = (
                 C1_WEIGHT_R30M  * r30m_raw.get(pair, 0.0)
                 + C1_WEIGHT_R2H   * r2h_raw.get(pair, 0.0)
                 + C1_WEIGHT_R6H   * r6h_raw.get(pair, 0.0)
                 + C1_WEIGHT_R24H  * r24h_raw.get(pair, 0.0)
                 + C1_WEIGHT_CS_RS * (r2h_raw.get(pair, 0.0) - median_r2h)
             )
-            c1_raw_vals[pair] = raw
         z_c1 = cross_sectional_z(c1_raw_vals)
 
-        # Accumulate IC data
+        # ── TS signals (F1–F7): per-asset z-score → cross-sectional normalize ──
+        # Step 1: compute per-asset TS scores using history BEFORE this ts
+        computed: Dict[str, dict] = {}
+        for pair in r6h_raw.keys():
+            z6h_ts  = z_score(r6h_raw[pair],  ts_hist[pair]["r_6h"])
+            z2h_ts  = z_score(r2h_raw[pair],  ts_hist[pair]["r_2h"])
+            z24h_ts = z_score(r24h_raw[pair], ts_hist[pair]["r_24h"])
+
+            # MA ratio: (current_price − MA_24h) / MA_24h, then TS z-scored
+            ph = price_hist[pair]
+            ma_ratio   = None
+            ma_ratio_z = None
+            if len(ph) >= 12:
+                ma_24h = sum(ph[-24:]) / min(24, len(ph))
+                cur_p  = all_prices[pair].get(ts)
+                if cur_p and ma_24h > 0:
+                    ma_ratio   = (cur_p - ma_24h) / ma_24h
+                    ma_ratio_z = z_score(ma_ratio, ts_hist[pair]["ma_ratio"])
+
+            # Volume ratio: current bar vol / rolling_mean(vol_48h)
+            vol_ratio = None
+            if all_volumes:
+                cur_vol = (all_volumes.get(pair) or {}).get(ts)
+                vh = vol_hist[pair]
+                if cur_vol is not None and len(vh) >= 10:
+                    mean_vol  = sum(vh[-48:]) / min(48, len(vh))
+                    vol_ratio = cur_vol / mean_vol if mean_vol > 0 else None
+
+            computed[pair] = {
+                "z6h": z6h_ts, "z2h": z2h_ts, "z24h": z24h_ts,
+                "ma_ratio": ma_ratio, "ma_ratio_z": ma_ratio_z, "vol_ratio": vol_ratio,
+            }
+
+        # Step 2: collect raw TS values for cross-sectional normalization
+        f1_raw = {p: c["z6h"]  for p, c in computed.items()}
+        f2_raw = {p: c["z2h"]  for p, c in computed.items()}
+        f3_raw = {p: c["z24h"] for p, c in computed.items()}
+        f4_raw = {p: c["ma_ratio_z"]                          for p, c in computed.items() if c["ma_ratio_z"]  is not None}
+        f5_raw = {p: c["vol_ratio"]                           for p, c in computed.items() if c["vol_ratio"]   is not None}
+        f6_raw = {p: c["z6h"] * min(c["vol_ratio"], 2.0)     for p, c in computed.items() if c["vol_ratio"]   is not None}
+        f7_raw = {
+            p: (0.35 * c["z6h"] + 0.35 * c["z2h"] + 0.20 * c["z24h"] + 0.10 * c["ma_ratio_z"])
+            for p, c in computed.items() if c["ma_ratio_z"] is not None
+        }
+
+        n_min = max(3, len(active_pairs) // 4)
+        z_f1 = cross_sectional_z(f1_raw) if len(f1_raw) >= n_min else {}
+        z_f2 = cross_sectional_z(f2_raw) if len(f2_raw) >= n_min else {}
+        z_f3 = cross_sectional_z(f3_raw) if len(f3_raw) >= n_min else {}
+        z_f4 = cross_sectional_z(f4_raw) if len(f4_raw) >= n_min else {}
+        z_f5 = cross_sectional_z(f5_raw) if len(f5_raw) >= n_min else {}
+        z_f6 = cross_sectional_z(f6_raw) if len(f6_raw) >= n_min else {}
+        z_f7 = cross_sectional_z(f7_raw) if len(f7_raw) >= n_min else {}
+
+        # Step 3: update TS histories AFTER computing all signals (no look-ahead)
+        for pair in active_pairs:
+            if pair in r6h_raw:
+                ts_hist[pair]["r_6h"].append(r6h_raw[pair])
+                ts_hist[pair]["r_2h"].append(r2h_raw[pair])
+                ts_hist[pair]["r_24h"].append(r24h_raw[pair])
+                for h in ("r_6h", "r_2h", "r_24h"):
+                    if len(ts_hist[pair][h]) > TS_LOOKBACK:
+                        ts_hist[pair][h] = ts_hist[pair][h][-TS_LOOKBACK:]
+
+                c = computed.get(pair, {})
+                if c.get("ma_ratio") is not None:
+                    ts_hist[pair]["ma_ratio"].append(c["ma_ratio"])
+                    if len(ts_hist[pair]["ma_ratio"]) > TS_LOOKBACK:
+                        ts_hist[pair]["ma_ratio"] = ts_hist[pair]["ma_ratio"][-TS_LOOKBACK:]
+
+            cur_p = all_prices[pair].get(ts)
+            if cur_p:
+                price_hist[pair].append(cur_p)
+                if len(price_hist[pair]) > 48:
+                    price_hist[pair] = price_hist[pair][-48:]
+
+            if all_volumes:
+                cur_vol = (all_volumes.get(pair) or {}).get(ts)
+                if cur_vol is not None:
+                    vol_hist[pair].append(cur_vol)
+                    if len(vol_hist[pair]) > TS_LOOKBACK:
+                        vol_hist[pair] = vol_hist[pair][-TS_LOOKBACK:]
+
+        # ── Accumulate IC data ──────────────────────────────────────────────────
         for pair in fwd_raw.keys():
             fwd_ret = fwd_raw[pair]
-            if pair in z30m:
-                data["r_30m"].append((z30m[pair], fwd_ret))
-            if pair in z2h:
-                data["r_2h"].append((z2h[pair], fwd_ret))
-            if pair in z6h:
-                data["r_6h"].append((z6h[pair], fwd_ret))
-            if pair in z24h:
-                data["r_24h"].append((z24h[pair], fwd_ret))
-            if pair in z_c1:
-                data["C1_composite"].append((z_c1[pair], fwd_ret))
+            if pair in z30m:  data["r_30m"].append((z30m[pair], fwd_ret))
+            if pair in z2h:   data["r_2h"].append((z2h[pair], fwd_ret))
+            if pair in z6h:   data["r_6h"].append((z6h[pair], fwd_ret))
+            if pair in z24h:  data["r_24h"].append((z24h[pair], fwd_ret))
+            if pair in z_c1:  data["C1_composite"].append((z_c1[pair], fwd_ret))
+            if pair in z_f1:  data["F1_z6h"].append((z_f1[pair], fwd_ret))
+            if pair in z_f2:  data["F2_z2h"].append((z_f2[pair], fwd_ret))
+            if pair in z_f3:  data["F3_z24h"].append((z_f3[pair], fwd_ret))
+            if pair in z_f4:  data["F4_ma"].append((z_f4[pair], fwd_ret))
+            if pair in z_f5:  data["F5_vol"].append((z_f5[pair], fwd_ret))
+            if pair in z_f6:  data["F6_z6h_vol"].append((z_f6[pair], fwd_ret))
+            if pair in z_f7:  data["F7_composite"].append((z_f7[pair], fwd_ret))
 
     n_pairs = len(active_pairs)
     return {sig: compute_ic_stats(data[sig], n_pairs=n_pairs) for sig in signals_names}
@@ -436,7 +581,7 @@ def run_analysis(
 
 def fmt_ic(stats: dict) -> str:
     if stats.get("mean_ic") is None or stats.get("n", 0) < 5:
-        return "  N/A (insufficient data)"
+        return "N/A"
     ic = stats["mean_ic"]
     t  = stats.get("t_stat", 0.0) or 0.0
     hr = stats.get("hit_rate", 0.0) or 0.0
@@ -448,7 +593,7 @@ def fmt_ic(stats: dict) -> str:
         flag = " **"
     elif ic > 0.0:
         flag = " *"
-    return f"  IC={ic:+.4f}  t={t:+.2f}  hit={hr:.1%}  n={n}{flag}"
+    return f"IC={ic:+.4f} t={t:+.2f} hit={hr:.0%} n={n}{flag}"
 
 
 def main() -> None:
@@ -464,7 +609,7 @@ def main() -> None:
     # ── Load data in parallel ──────────────────────────────────────────────────
     print(f"\nDownloading current-period data (last {CURRENT_LOOKBACK_MONTHS} months, {len(pairs)} pairs)...")
     current_months = _month_range_recent(CURRENT_LOOKBACK_MONTHS)
-    current_prices = load_prices_all_parallel(pairs, current_months)
+    current_prices, current_volumes = load_prices_and_volumes_all_parallel(pairs, current_months)
 
     # Report coverage
     covered = sum(1 for p in current_prices.values() if len(p) > 100)
@@ -472,181 +617,187 @@ def main() -> None:
 
     print(f"\nDownloading trending-period data (Oct 2024–Jan 2025, {len(pairs)} pairs)...")
     trending_months = _month_range(TRENDING_START, TRENDING_END)
-    trending_prices = load_prices_all_parallel(pairs, trending_months)
+    trending_prices, trending_volumes = load_prices_and_volumes_all_parallel(pairs, trending_months)
 
     covered_t = sum(1 for p in trending_prices.values() if len(p) > 100)
     print(f"  {covered_t}/{len(pairs)} pairs have data")
 
     # ── Run analysis ──────────────────────────────────────────────────────────
     print("\nRunning Test A: Current period (unconditional)...")
-    results_A = run_analysis(current_prices, regime_filter=False)
+    results_A = run_analysis(current_prices, current_volumes, regime_filter=False)
 
     print("Running Test B: Trending period (Oct 2024–Jan 2025)...")
-    results_B = run_analysis(trending_prices, regime_filter=False)
+    results_B = run_analysis(trending_prices, trending_volumes, regime_filter=False)
 
     print("Running Test C: Current period (TREND-eligible hours only)...")
-    results_C = run_analysis(current_prices, regime_filter=True)
+    results_C = run_analysis(current_prices, current_volumes, regime_filter=True)
 
     # ── Format output ─────────────────────────────────────────────────────────
-    signals = ["r_30m", "r_2h", "r_6h", "r_24h", "C1_composite"]
+    cs_signals = ["r_30m", "r_2h", "r_6h", "r_24h", "C1_composite"]
+    ts_signals = ["F1_z6h", "F2_z2h", "F3_z24h", "F4_ma", "F5_vol", "F6_z6h_vol", "F7_composite"]
+    all_signals = cs_signals + ts_signals
+
     signal_labels = {
-        "r_30m":       "1h ret(30m~) ",  # hourly data: 1h return used as 30m proxy
-        "r_2h":        "2h return    ",
-        "r_6h":        "6h return    ",
-        "r_24h":       "24h return   ",
-        "C1_composite": "C1 composite ",
+        "r_30m":        "1h ret(30m~)  ",
+        "r_2h":         "2h return     ",
+        "r_6h":         "6h return     ",
+        "r_24h":        "24h return    ",
+        "C1_composite": "C1 composite  ",
+        "F1_z6h":       "F1: TS z_6h   ",
+        "F2_z2h":       "F2: TS z_2h   ",
+        "F3_z24h":      "F3: TS z_24h  ",
+        "F4_ma":        "F4: TS MA-dev  ",
+        "F5_vol":       "F5: vol ratio  ",
+        "F6_z6h_vol":   "F6: z6h×vol   ",
+        "F7_composite": "F7: TS compos. ",
     }
 
     # Count filtered timestamps for Test C
-    # (rough: count available C1_composite periods in C vs A)
     n_total_A = results_A.get("C1_composite", {}).get("n", 0)
     n_total_C = results_C.get("C1_composite", {}).get("n", 0)
     pct_trend_eligible = (n_total_C / n_total_A * 100) if n_total_A > 0 else 0
 
-    # Decision summary
-    def signal_quality(stats_b: dict, stats_c: dict) -> str:
-        """Summarize signal quality from trending-period and TREND-conditional results."""
-        ic_b = stats_b.get("mean_ic") or 0
-        ic_c = stats_c.get("mean_ic") or 0
-        t_b = abs(stats_b.get("t_stat") or 0)
-        t_c = abs(stats_c.get("t_stat") or 0)
-        if ic_b >= 0.05 and t_b >= 1.5:
-            return "STRONG in trending period"
-        elif ic_c >= 0.04 and t_c >= 1.0:
-            return "POSITIVE in TREND regime"
-        elif ic_b >= 0.02 or ic_c >= 0.02:
-            return "WEAK positive"
-        elif ic_b >= 0.0 and ic_c >= 0.0:
-            return "Near zero (noise)"
-        else:
-            return "NEGATIVE (mean-reversion)"
-
     lines = [
         "# Extended IC Validation — Multi-Signal, Multi-Period, Regime-Conditional",
-        f"# Universe: {len(pairs)} pairs ({', '.join(pairs[:6])}, ...)",
-        f"# Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+        f"**Universe:** {len(pairs)} pairs  |  "
+        f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
         "",
         "## Test Conditions",
         "",
-        "  A. Current period (unconditional): Dec 2025–Feb 2026",
-        "  B. Trending period (unconditional): Oct 2024–Jan 2025  [BTC +61% bull run]",
-        f"  C. Current period, TREND-eligible only: BTC vol z-score <= 0  [{pct_trend_eligible:.0f}% of timestamps]",
+        "- **A.** Current period (unconditional): Dec 2025–Feb 2026",
+        "- **B.** Trending period (unconditional): Oct 2024–Jan 2025 — BTC +61% bull run",
+        f"- **C.** Current period, TREND-eligible only: BTC vol z-score ≤ 0 "
+        f"({pct_trend_eligible:.0f}% of timestamps)",
         "",
-        "  Forward return target: forward 6-hour return",
-        "  Significance: * = IC>0, ** = IC>0.03+t>1.0, *** = IC>0.05+t>1.5",
+        "Forward return target: forward 6h return.  "
+        "Significance: `*` IC>0 · `**` IC>0.03+t>1.0 · `***` IC>0.05+t>1.5",
         "",
-        "## IC Results Table",
+        "## Part 1: Cross-Sectional Signal IC (baseline)",
         "",
-        f"  {'Signal':15s} | {'Test A (current)':30s} | {'Test B (trending)':30s} | {'Test C (TREND-cond.)':30s}",
-        f"  {'-'*15}-+-{'-'*30}-+-{'-'*30}-+-{'-'*30}",
+        "| Signal | Test A (current) | Test B (trending) | Test C (TREND-cond.) |",
+        "|--------|-----------------|-------------------|----------------------|",
     ]
-    for sig in signals:
-        label = signal_labels[sig]
+    for sig in cs_signals:
+        label = signal_labels[sig].strip()
         a = fmt_ic(results_A.get(sig, {}))
         b = fmt_ic(results_B.get(sig, {}))
         c = fmt_ic(results_C.get(sig, {}))
-        lines.append(f"  {label} |{a:<30} |{b:<30} |{c:<30}")
+        lines.append(f"| {label} | {a} | {b} | {c} |")
 
     lines += [
         "",
-        "## Signal Quality Assessment",
+        "## Part 2: Time-Series (TS) Signal IC — Candidate Formulas F1–F7",
         "",
+        "Mechanism: per-asset TS z-score removes cross-section heterogeneity.  ",
+        "Final cross-sectional normalization applied as allocation step (doctrine).  ",
+        "F1–F3: pure TS momentum · F4: MA deviation anchor · F5: volume flow proxy · "
+        "F6: volume-confirmed TS momentum · F7: multi-horizon composite.",
+        "",
+        "| Signal | Test A (current) | Test B (trending) | Test C (TREND-cond.) |",
+        "|--------|-----------------|-------------------|----------------------|",
     ]
-    for sig in signals:
-        quality = signal_quality(results_B.get(sig, {}), results_C.get(sig, {}))
-        ic_b = results_B.get(sig, {}).get("mean_ic")
-        ic_c = results_C.get(sig, {}).get("mean_ic")
-        ic_b_str = f"{ic_b:+.4f}" if ic_b is not None else "N/A"
-        ic_c_str = f"{ic_c:+.4f}" if ic_c is not None else "N/A"
-        lines.append(f"  {signal_labels[sig]}: {quality}  (B IC={ic_b_str}, C IC={ic_c_str})")
+    for sig in ts_signals:
+        label = signal_labels[sig].strip()
+        a = fmt_ic(results_A.get(sig, {}))
+        b = fmt_ic(results_B.get(sig, {}))
+        c = fmt_ic(results_C.get(sig, {}))
+        lines.append(f"| {label} | {a} | {b} | {c} |")
+
+    # ── Decision gate for TS formula selection ─────────────────────────────────
+    lines += [
+        "",
+        "## TS Formula Selection — Decision Gate",
+        "",
+        "Gate: **IC > 0 in Test B** (trending period) **AND t > 1.0**.  ",
+        "Tiebreak: highest IC Sharpe (mean_IC / std_IC across period ICs).",
+        "",
+        "| Formula | IC (Test B) | t-stat | IC Sharpe | Gate |",
+        "|---------|------------|--------|-----------|------|",
+    ]
+
+    passing = []
+    for sig in ts_signals:
+        ic_b = results_B.get(sig, {}).get("mean_ic") or 0
+        t_b  = results_B.get(sig, {}).get("t_stat")  or 0
+        period_ics = results_B.get(sig, {}).get("period_ics", [])
+        std_ic = (math.sqrt(sum((v - ic_b) ** 2 for v in period_ics) / len(period_ics))
+                  if len(period_ics) > 1 else 1e-8)
+        ic_sharpe = ic_b / (std_ic or 1e-8)
+        gate_pass = ic_b > 0 and t_b > 1.0
+        status = "**PASS**" if gate_pass else "FAIL"
+        lines.append(
+            f"| {signal_labels[sig].strip()} | {ic_b:+.4f} | {t_b:+.2f} | {ic_sharpe:+.2f} | {status} |"
+        )
+        if gate_pass:
+            passing.append((ic_sharpe, sig))
+
+    lines.append("")
+    if passing:
+        passing.sort(key=lambda x: -x[0])
+        best_ts = passing[0][1]
+        lines += [
+            f"**SELECTED:** {signal_labels[best_ts].strip()} "
+            f"(IC Sharpe = {passing[0][0]:+.2f}, {len(passing)} formula(s) passed)",
+            "",
+            "**Implication:** Replace cross-sectional C1 with this TS signal.  ",
+            "Update `config.py` `C1_TS_WEIGHT_*` and `signals.py` accordingly.",
+        ]
+    else:
+        best_ts = None
+        lines += [
+            "**NO TS FORMULA passes the decision gate.**  ",
+            "Strategy value rests on regime-gated drawdown control (Sortino/Calmar),  ",
+            "not on selection alpha. Cross-sectional approach retained as-is.",
+        ]
 
     # Overall interpretation
     composite_b = results_B.get("C1_composite", {})
-    composite_c = results_C.get("C1_composite", {})
-    ic_b_c1  = composite_b.get("mean_ic") or 0
-    ic_c_c1  = composite_c.get("mean_ic") or 0
-    t_b_c1   = composite_b.get("t_stat") or 0
-    t_c_c1   = composite_c.get("t_stat") or 0
-
-    best_trending = max(
-        [(results_B.get(s, {}).get("mean_ic") or 0, s) for s in signals],
-        key=lambda x: x[0]
-    )
+    ic_b_c1 = composite_b.get("mean_ic") or 0
+    t_b_c1  = composite_b.get("t_stat")  or 0
 
     lines += [
         "",
         "## Interpretation",
         "",
-        f"  Best individual signal in trending period (Test B): "
-        f"{signal_labels[best_trending[1]].strip()} IC={best_trending[0]:+.4f}",
-        "",
-        f"  C1 composite — Trending period (Test B): IC={ic_b_c1:+.4f}, t={t_b_c1:+.2f}",
-        f"  C1 composite — TREND-conditional  (Test C): IC={ic_c_c1:+.4f}, t={t_c_c1:+.2f}",
-        "",
+        f"**C1 composite (cross-sectional)** — Trending period: IC={ic_b_c1:+.4f}, t={t_b_c1:+.2f}",
     ]
-
-    if ic_b_c1 >= 0.05 and t_b_c1 >= 1.5:
+    if best_ts:
+        best_b = results_B.get(best_ts, {}).get("mean_ic") or 0
+        best_t = results_B.get(best_ts, {}).get("t_stat")  or 0
         lines += [
-            "  VERDICT: C1 composite signal has statistically meaningful predictive power",
-            "  in trending market conditions. The regime gating correctly concentrates",
-            "  trading in the periods where the signal has edge.",
-            "  RECOMMENDATION: No weight changes needed. Strategy is empirically validated.",
+            f"**{signal_labels[best_ts].strip()}** — Trending period: IC={best_b:+.4f}, t={best_t:+.2f}",
+            "",
+            "**Verdict:** TS momentum signal shows positive predictive power in the trending "
+            "period. Per-asset normalization removes meme-coin contamination that caused "
+            "cross-sectional rank to capture exhaustion/reversal rather than drift.  ",
+            "**Recommendation:** Implement selected TS formula as C1 replacement.",
         ]
-    elif ic_c_c1 >= 0.04 and t_c_c1 >= 1.0:
-        lines += [
-            "  VERDICT: C1 composite signal is positively predictive in TREND-eligible",
-            "  periods (when the regime engine would allow trading). The unconditional",
-            "  IC includes non-TREND hours where we are in cash — those hours should not",
-            "  count against the signal. Strategy is conditionally validated.",
-            "  RECOMMENDATION: No weight changes needed.",
-        ]
-    elif ic_b_c1 >= 0.02 or ic_c_c1 >= 0.02:
-        lines += [
-            "  VERDICT: Weak positive IC in either the trending period or TREND-conditional",
-            "  test. The signal has marginal predictive value.",
-            "  RECOMMENDATION: Consider shifting weight toward the highest-IC horizon.",
-        ]
-        # Check if 24h dominates
-        ic_24h_b = results_B.get("r_24h", {}).get("mean_ic") or 0
-        ic_6h_b  = results_B.get("r_6h", {}).get("mean_ic") or 0
-        if ic_24h_b > ic_6h_b + 0.03:
-            lines.append(
-                f"  NOTE: 24h IC ({ic_24h_b:+.4f}) > 6h IC ({ic_6h_b:+.4f}) by >{0.03:.2f}."
-                " Consider shifting weight from 6h to 24h in config.py."
-            )
     else:
         lines += [
-            "  VERDICT: No individual signal or composite shows meaningful IC (>0.02)",
-            "  in the trending period OR in TREND-conditional periods.",
-            "  Cross-sectional momentum does not have detectable predictive power",
-            "  in this universe across these test windows.",
-            "  RECOMMENDATION: Strategy value comes from regime-gated drawdown control",
-            "  (Sortino/Calmar), not from signal-based alpha. Narrative should focus on",
-            "  risk-adjusted return objectives, not return prediction.",
+            "",
+            "**Verdict:** Neither cross-sectional nor time-series momentum signals show "
+            "statistically meaningful IC in the trending period.  ",
+            "Strategy value is entirely in regime gating (Sortino) and kill switch (Calmar).  ",
+            "**Recommendation:** No signal change warranted. Maintain current approach.",
         ]
 
     lines += [
         "",
         "## Notes",
         "",
-        "  r_30m proxy: Binance Vision provides 1h bars; 30-min return cannot be",
-        "  computed directly. 1-hour return is used as a proxy (labeled '1h ret(30m~)').",
-        "  The live bot uses 1-min snapshots and can compute r_30m precisely.",
+        "- `r_30m` proxy: Binance Vision provides 1h bars; 1h return used as 30m proxy.",
+        "- F5/F6 require volume data (Binance klines col 5).",
+        "- TS signals use 48-period rolling baseline; first 3 periods return z=0 (warmup).",
+        "- Two-step construction: (1) per-asset TS z-score → (2) cross-sectional normalize.",
         "",
-        "  Law of large numbers: a composite only amplifies predictive signal if",
-        "  individual components are positively correlated with the target. A composite",
-        "  of non-predictive signals remains non-predictive.",
-        "",
-        "  Regime-conditionality: the strategy is designed to trade only in TREND",
-        "  regimes. IC measured unconditionally includes periods where the strategy",
-        "  would be in HAZARD_DEFENSIVE (in cash). Test C isolates the relevant subset.",
-        "",
-        "  Reference: ic_results.md for baseline 3-month unconditional IC,",
-        "  backtest_results.md for simulation results.",
+        "Reference: `ic_results.md` for baseline unconditional IC, "
+        "`backtest_results.md` for simulation results.",
     ]
 
     output = "\n".join(lines)
-    print("\n" + output)
+    sys.stdout.buffer.write(("\n" + output + "\n").encode("utf-8", errors="replace"))
+    sys.stdout.buffer.flush()
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(output + "\n")
@@ -660,59 +811,68 @@ def main() -> None:
 
         os.makedirs(CHARTS_DIR, exist_ok=True)
 
-        labels = ["30m", "2h", "6h", "24h", "C1 composite"]
-        ic_A = [results_A.get(s, {}).get("mean_ic") or 0 for s in signals]
-        ic_B = [results_B.get(s, {}).get("mean_ic") or 0 for s in signals]
-        ic_C = [results_C.get(s, {}).get("mean_ic") or 0 for s in signals]
-
-        x = range(len(signals))
-        width = 0.25
-
-        fig, ax = plt.subplots(figsize=(13, 6))
-
-        def bar_colors(ics):
-            colors = []
+        def bar_colors(ics: List[float]) -> List[str]:
+            out = []
             for ic in ics:
                 if ic >= 0.04:
-                    colors.append("#2ecc71")
+                    out.append("#2ecc71")
                 elif ic > 0:
-                    colors.append("#f39c12")
+                    out.append("#f39c12")
                 else:
-                    colors.append("#e74c3c")
-            return colors
+                    out.append("#e74c3c")
+            return out
 
-        for i, (ic_list, offset, label, alpha) in enumerate([
-            (ic_A, -width, "A: Current period", 0.65),
-            (ic_B,      0, "B: Trending period (Oct 2024–Jan 2025)", 0.85),
-            (ic_C, +width, "C: TREND-conditional (low vol only)", 0.65),
-        ]):
-            positions = [xi + offset for xi in x]
-            colors = bar_colors(ic_list)
-            bars = ax.bar(positions, ic_list, width=width * 0.9,
-                          label=label, color=colors, alpha=alpha, edgecolor="white")
-            for bar, val in zip(bars, ic_list):
-                va = "bottom" if val >= 0 else "top"
-                offset_pts = 2 if val >= 0 else -2
-                ax.text(bar.get_x() + bar.get_width() / 2, val,
-                        f"{val:+.3f}", ha="center", va=va,
-                        fontsize=7.5, color="#2c3e50")
+        def draw_ic_bars(ax: "plt.Axes", sig_list: List[str], x_labels: List[str]) -> None:
+            ic_A = [results_A.get(s, {}).get("mean_ic") or 0 for s in sig_list]
+            ic_B = [results_B.get(s, {}).get("mean_ic") or 0 for s in sig_list]
+            ic_C = [results_C.get(s, {}).get("mean_ic") or 0 for s in sig_list]
+            x = range(len(sig_list))
+            width = 0.25
+            for ic_list, offset, lbl, alpha in [
+                (ic_A, -width, "A: Current period",              0.65),
+                (ic_B,      0, "B: Trending (Oct 2024–Jan 2025)", 0.85),
+                (ic_C, +width, "C: TREND-conditional",            0.65),
+            ]:
+                positions = [xi + offset for xi in x]
+                bars = ax.bar(positions, ic_list, width=width * 0.9,
+                              label=lbl, color=bar_colors(ic_list), alpha=alpha,
+                              edgecolor="white")
+                for bar, val in zip(bars, ic_list):
+                    ax.text(bar.get_x() + bar.get_width() / 2, val,
+                            f"{val:+.3f}", ha="center",
+                            va="bottom" if val >= 0 else "top",
+                            fontsize=7, color="#2c3e50")
+            ax.axhline(0,    color="black",   linewidth=0.8)
+            ax.axhline(0.04, color="#2ecc71", linewidth=0.8, linestyle=":", alpha=0.7)
+            ax.axhline(-0.04, color="#e74c3c", linewidth=0.8, linestyle=":", alpha=0.7)
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(x_labels, fontsize=9)
+            ax.set_ylabel("Spearman IC")
+            all_vals = [results_A.get(s, {}).get("mean_ic") or 0 for s in sig_list] + \
+                       [results_B.get(s, {}).get("mean_ic") or 0 for s in sig_list] + \
+                       [results_C.get(s, {}).get("mean_ic") or 0 for s in sig_list]
+            ax.set_ylim(min(all_vals) - 0.04, max(all_vals) + 0.07)
 
-        ax.axhline(0, color="black", linewidth=0.8)
-        ax.axhline(0.04, color="#2ecc71", linewidth=0.8, linestyle=":", alpha=0.6,
-                   label="IC = 0.04 (weak predictive threshold)")
-        ax.axhline(-0.04, color="#e74c3c", linewidth=0.8, linestyle=":", alpha=0.6)
+        cs_labels = ["30m(~)", "2h", "6h", "24h", "C1"]
+        ts_labels  = ["F1:z6h", "F2:z2h", "F3:z24h", "F4:MA", "F5:vol", "F6:z6h×vol", "F7:comp"]
 
-        ax.set_xticks(list(x))
-        ax.set_xticklabels(labels, fontsize=10)
-        ax.set_title(
-            "IC by Signal × Market Regime — Cross-Sectional Momentum Validation\n"
-            "Green = IC ≥ 0.04 (predictive), Orange = 0 < IC < 0.04 (weak), Red = IC < 0 (mean-reverting)",
-            fontsize=11, fontweight="bold"
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+
+        draw_ic_bars(ax1, cs_signals, cs_labels)
+        ax1.set_title(
+            "Part 1: Cross-Sectional Signals (baseline)\n"
+            "Green=IC≥0.04, Orange=0<IC<0.04, Red=IC<0",
+            fontsize=10, fontweight="bold"
         )
-        ax.set_ylabel("Spearman Information Coefficient (IC)")
-        ax.legend(fontsize=8, loc="upper right")
-        ax.set_ylim(min(min(ic_A), min(ic_B), min(ic_C)) - 0.04,
-                    max(max(ic_A), max(ic_B), max(ic_C)) + 0.06)
+        ax1.legend(fontsize=8, loc="upper right")
+
+        draw_ic_bars(ax2, ts_signals, ts_labels)
+        ax2.set_title(
+            "Part 2: Time-Series (TS) Candidate Formulas F1–F7\n"
+            "Two-step: per-asset TS z-score → cross-sectional normalization",
+            fontsize=10, fontweight="bold"
+        )
+        ax2.legend(fontsize=8, loc="upper right")
 
         plt.tight_layout()
         chart_path = os.path.join(CHARTS_DIR, "ic_multi_horizon.png")
