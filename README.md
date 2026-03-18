@@ -1,175 +1,219 @@
-# Crypto Momentum Trading Bot — Team178-Hamburglers
+# Crypto Momentum Bot — Team178-Hamburglers (NUS)
 
 **SG vs HK Quant Trading Hackathon 2026**
 
-## 1. Project Overview
+---
 
-**Strategy:** Transitional-drift Momentum with Regime-Adaptive Hazard Gating
+## Strategy
 
-**Thesis:** Exploit incomplete cross-asset expectation diffusion in crypto spot markets. When a market-moving event occurs, leader assets reprice first. Secondary assets update more slowly — this lag creates a temporary continuation/drift window that can be harvested systematically.
+**Thesis:** Exploit incomplete cross-asset expectation diffusion in crypto spot markets. Two economic mechanisms are deployed in parallel, combined via continuous regime-adaptive allocation:
 
-**Key features:**
-- Theory-grounded C1/M_t/PositionScore framework (transparent formula, no black-box ML)
-- Crypto-adapted Regime State Vector (LSI/MPI/FEI) derived from ticker data only
-- Exponential hazard gating targeting Sortino ratio maximization
-- Quarter-Kelly position sizing with downside-volatility denominator
-- Hard drawdown kill switch at -12% for Calmar protection
-- Full state persistence and crash recovery
-
-## 2. Architecture
-
-```
-main.py                     # Entry point + main event loop
-config.py                   # All parameters, thresholds, weights
-state.py                    # JSON state persistence (crash recovery)
-
-bot/
-  data/
-    roostoo_client.py       # HMAC-signed API client (all 7 endpoints)
-    market_cache.py         # Rolling ticker snapshot store (300 × all pairs)
-    feature_builder.py      # r_30m, r_2h, r_6h, r_24h, vol, spread, M_t inputs
-
-  strategy/
-    regime.py               # Regime State Vector: LSI/MPI/FEI → (RegimeState, λ_t)
-    signals.py              # C1: cross-sectional z-score of asset momentum
-    maturity.py             # M_t: diffusion maturity [0,1] → C3 = 1 − M_t
-    ranking.py              # PositionScore = C1 × exp(−λ_t) × C3
-
-  portfolio/
-    sizing.py               # Quarter-Kelly weights (Sortino-targeted)
-    allocator.py            # Score-weighted + regime gross cap allocation
-
-  execution/
-    order_manager.py        # Limit orders, timeout cancellation, emergency exit
-    reconcile.py            # Startup reconciliation + pre-flight checks
-
-  risk/
-    drawdown.py             # Portfolio NAV tracking, 3-level drawdown response
-    kill_switch.py          # Portfolio kill switch + BTC direct gates + per-position stops
-    constraints.py          # Min hold period, re-entry lockout, max hold time
-
-  infra/
-    logger.py               # Structured logs: trades.csv, state.jsonl, errors.log
-    retry.py                # Exponential backoff retry decorator
-
-tests/
-  test_features.py          # Feature computation correctness
-  test_precision.py         # Order precision and validation
-  test_scoring.py           # C1/M_t/PositionScore formula verification
-
-docs/
-  STRATEGY.md               # Full strategy explanation
-  ARCHITECTURE.md           # Module dependency diagram
-
-research/
-  backtest_simulation.py    # Full strategy simulation on Binance 1h data (Oct 2024–Jan 2025)
-  ic_validation_extended.py # Per-signal IC test: 3 periods × 5 signals (cross-sectional momentum)
-  ic_validation.py          # Baseline Spearman IC against forward 6h return
-  generate_charts.py        # Equity curve, drawdown, and IC visualizations
-  backtest_results.md       # Simulation results with fee-drag analysis
-  ic_results_extended.md    # Full IC table: current, trending, regime-conditional
-  charts/                   # PNG outputs: equity_curve, drawdown, ic_multi_horizon
-```
-
-**Tech stack:** Python 3.11+, requests, python-dotenv
-
-**Supplementary data sources (public APIs, no authentication required):**
-- Crypto Fear & Greed Index: alternative.me — refreshed daily; 0.15 weight in LSI stress calculation
-- Binance perpetual funding rates: binance.com futures API — refreshed every 10 min; 0.20 weight in M_t maturity calculation
-
-## 3. Strategy Explanation
-
-See [docs/STRATEGY.md](docs/STRATEGY.md) for the full write-up.
+| Engine | Archetype | Mechanism |
+|--------|-----------|-----------|
+| **H1 Reversal** | Mean-reversion | Laggard assets recover within 1–4h as liquidity restores; buy cross-sectional underperformers with low realized vol |
+| **H2C BTC-Diffusion** | Momentum | BTC reprices first on macro information; altcoins lag due to rational inattention; buy assets that haven't yet tracked BTC's move |
 
 **Scoring formula:**
+
 ```
 PositionScore_i = C1_i × exp(−λ_t) × (1 − M_t_i)
 ```
 
-| Component | Role | Description |
-|-----------|------|-------------|
-| `C1_i` | Alpha signal | Cross-sectional z-score of weighted momentum (30m/2h/6h/24h + relative strength) |
-| `λ_t` | Hazard rate | Market stress from Regime Engine (LSI/MPI/FEI); high λ collapses all scores exponentially |
-| `M_t_i` | Diffusion maturity | Fraction of expected drift already reflected in price; `1−M_t` = remaining drift capacity (C3) |
+| Component | Role | Description | Module |
+|-----------|------|-------------|--------|
+| `C1_i` | Alpha signal | 0.70 × CS_z(−momentum) + 0.30 × CS_z(−vol): laggards with low realized vol | `bot/strategy/signals.py` |
+| `λ_t` | Market hazard rate | LSI/MPI/FEI regime engine; high λ collapses all scores exponentially | `bot/strategy/regime.py` |
+| `1 − M_t_i` | Drift capacity (C3) | Fraction of expected move still unrealized; blocks entry if move is spent | `bot/strategy/maturity.py` |
 
-**Entry conditions:**
-- C1 z-score exceeds regime-specific threshold (0.60 in trend, 1.00 in neutral)
-- M_t < 0.72 (drift not yet spent)
-- PositionScore > 0 (long only)
-- Not in re-entry lockout (2h after exit)
-- Regime is not HAZARD_DEFENSIVE
+**H2C continuous allocation** (failure-mode-derived formula):
 
-**Exit conditions:**
-- C1 z-score falls below 0.20 (signal decayed)
-- Hard stop-loss: -4% from entry (market order)
-- Trailing stop: activates at +3% gain, trails at 2.5%
-- Max hold time: 72 hours
+```
+f_t = f_max × min(1, |r_BTC,2h| / 0.003) × max(0, 1 − vol_z / 2.0)
+```
 
-**Risk management:**
-- Portfolio drawdown levels: -5% (caution), -8% (defensive), -12% (kill switch)
-- BTC direct gate: -3% 2h return blocks entries; -6% triggers emergency exit
-- Min holding period: 4h (prevents fee-drag churn)
+- `btc_activity = 0` when BTC is flat → H2C signal undefined; ramps to 1 at 0.3% move
+- `stress_decay = 0` when `vol_z ≥ 2σ` → correlations spike, lag-signal degrades
+- `f_max = 0.50`, mean active fraction ≈ 36.8%
 
-**Position sizing:**
-- Quarter-Kelly: `0.25 × (expected_return / downside_vol²)`
-- Per-asset cap: max 30% NAV
-- Regime gross cap: 85% (trend), 65% (neutral), 0% (defensive)
+---
 
-## 4. Setup and Running
+## Validated Performance
 
-### Prerequisites
+Backtest period: Oct 2024 – Nov 2024 (train) | Dec 2024 – Jan 2025 (OOS holdout)
+Data: Binance 1h OHLCV, 44 pairs, 0.05% maker fee
+
+| Engine | Sortino | Calmar | MaxDD | OOS Return | OOS Sortino |
+|--------|---------|--------|-------|------------|-------------|
+| H1 only | 2.69 | 11.73 | −13.6% | +8.2% | 1.33 |
+| H2C only | 1.99 | 20.25 | −20.6% | +0.1% | 0.25 |
+| **Combined (f_max=0.50)** | **3.30** | **19.22** | **−13.7%** | **+9.3%** | **1.40** |
+
+Signal IC @ 4h: +0.047 (t=7.2) train · +0.066 (t=10.6) OOS holdout
+Block-resample: 97.2% of 500 random 10-day windows show positive IC
+
+Full research pipeline: [`research/README.md`](research/README.md)
+Combined backtest details: [`research/portfolio/05_dual_portfolio_backtest.md`](research/portfolio/05_dual_portfolio_backtest.md)
+
+---
+
+## Architecture
+
+```
+main.py              # 60-second event loop — ticker → features → regime → signals → execution
+config.py            # All parameters (60+ constants, each traced to a research finding)
+state.py             # JSON state persistence (crash recovery across restarts)
+
+bot/
+  data/
+    roostoo_client.py      # HMAC-SHA256 signed client (7 endpoints, 3-retry backoff)
+    market_cache.py        # Rolling 300-snapshot price history per asset
+    feature_builder.py     # Computes r_30m, r_2h, r_6h, r_24h, realized vol, spread, M_t inputs
+    funding_rate_client.py # Binance perp funding rates — crowding proxy for M_t (free, no auth)
+    fear_greed_client.py   # Crypto Fear & Greed Index — LSI leading indicator (free, no auth)
+
+  strategy/
+    regime.py              # RegimeEngine: LSI/MPI/FEI → (RegimeState, λ_t)
+    signals.py             # C1 signal: 0.70×laggard z-score + 0.30×low-vol z-score
+    maturity.py            # M_t composite: extension/RSI_proxy/pct_rank/funding_rate
+    ranking.py             # PositionScore = C1×exp(−λ)×C3; entry/exit filter gates
+    h2_signals.py          # H2C engine: BTC-adjusted gap signal, rolling OLS beta
+    engine_aggregator.py   # Blends H1 and H2C weights: w = (1−f)×H1_w + f×H2C_w
+
+  portfolio/
+    allocator.py           # Score-proportional weights, regime gross caps, drawdown overrides
+
+  execution/
+    order_manager.py       # Limit orders at bid+20%×spread; timeout cancellation
+    reconcile.py           # Startup: cancel stale orders, verify balance, pre-flight checks
+
+  risk/
+    drawdown.py            # NAV tracking, 3-tier drawdown response (−5% / −8% / −12%)
+    kill_switch.py         # Emergency exit, BTC direct gates (−3% / −6%), per-position stops
+    constraints.py         # Min hold 4h, re-entry lockout 2h, max hold 72h
+
+  infra/
+    logger.py              # Structured logs: trades.csv (Screen 1 audit), state.jsonl, errors.log
+    retry.py               # @with_retry decorator: 3 attempts, exponential backoff
+
+tests/
+  test_features.py          # 19 tests — feature computation (returns, vol, RSI proxy, pct_rank)
+  test_precision.py         # 10 tests — order precision, minimum notional compliance
+  test_scoring.py           # 22 tests — C1/M_t/PositionScore formula + regime cascade
+  test_h2_signals.py        # 13 tests — H2C beta history, score computation
+  test_engine_aggregator.py #  6 tests — H1+H2C blending logic
+
+docs/
+  STRATEGY.md               # Full strategy writeup: mechanisms, formulas, IC validation, risk
+  ARCHITECTURE.md           # Module dependency diagram, data-flow, API rate budget
+
+research/
+  README.md                 # Judge's guide to the research pipeline
+  10_pipeline_index.md      # Master index: every doctrine step → file → verdict
+  (see research/README.md for full structure)
+```
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full module dependency diagram and per-loop data flow.
+
+---
+
+## Risk Management
+
+| Layer | Trigger | Action |
+|-------|---------|--------|
+| LSI > 0.80 (emergency) | BTC vol spike + spread + panic | λ=10.0, ~0% exposure |
+| LSI > 0.60 (defensive) | Elevated stress | λ=4.0 → exp(−4)≈2% effective allocation |
+| LSI > 0.40 or MPI < 0.30 | Caution / chop | λ=1.5 |
+| Portfolio DD −12% | Kill switch | Emergency exit all, block until −8% recovery |
+| Portfolio DD −8% | Defensive | Max 30% gross cap, recovery gate active |
+| Portfolio DD −5% | Caution | 50% gross cap override |
+| BTC −6% (2h return) | BTC gate | Emergency exit all positions |
+| BTC −3% (2h return) | BTC gate | Block all new entries |
+| Position −3% from entry | Hard stop | Market order exit |
+| Position +3%, then −2.5% | Trailing stop | Market order exit |
+| H2C position held 6h | H2C hold cap | Market order exit — diffusion window expired |
+| H2C + BTC −1% (2h) | H2C BTC reversal | Market order exit — diffusion direction invalidated |
+
+---
+
+## Setup
 
 ```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### Configuration
-
-```bash
+# Configure API keys
 cp .env.example .env
-# Edit .env with your API keys
-```
+# Edit .env: set ROOSTOO_API_KEY and ROOSTOO_API_SECRET
 
-### Run locally
-
-```bash
+# Run locally
 python main.py
 ```
 
-### Deploy on AWS EC2 (production)
+**AWS EC2 (production deployment):**
 
 ```bash
-# Start in persistent tmux session
+# Start in persistent background session
 tmux new-session -d -s bot 'python main.py'
 
-# Reattach to session
-tmux attach -t bot
+# Attach / detach
+tmux attach -t bot      # attach
+# Ctrl-B D              # detach (bot keeps running)
 
-# View logs
-tail -f logs/state.jsonl
-tail -f logs/trades.csv
-tail -f logs/errors.log
+# Monitor
+tail -f logs/state.jsonl   # strategy state per loop
+tail -f logs/trades.csv    # order audit trail
+tail -f logs/errors.log    # warnings and errors
 ```
 
-### Run tests
+---
+
+## Tests
+
+Run before every restart during live trading:
 
 ```bash
-python tests/test_features.py
-python tests/test_precision.py
-python tests/test_scoring.py
+python -X utf8 tests/test_features.py
+python -X utf8 tests/test_precision.py
+python -X utf8 tests/test_scoring.py
+python -X utf8 tests/test_h2_signals.py
+python -X utf8 tests/test_engine_aggregator.py
 ```
 
-## 5. Logging
+All 60 tests pass. Tests cover: signal formulas, order precision, regime cascade, H2C engine, and portfolio aggregation logic.
 
-| File | Content | Purpose |
-|------|---------|---------|
-| `logs/trades.csv` | Every order event (timestamp, pair, side, qty, price, fill, fee) | Trade audit / Screen 1 compliance |
-| `logs/state.jsonl` | Per-loop strategy state (regime, scores, drawdown, positions) | Strategy debugging |
-| `logs/errors.log` | Warnings and errors | Operational monitoring |
+---
 
-## 6. Competition Notes
+## Research
 
-- **Round 1 keys:** Set `ROOSTOO_API_KEY` and `ROOSTOO_API_SECRET` in `.env` before Mar 21 8pm HKT
-- **Bot runs autonomously** — no manual intervention after start
-- **Every parameter change** during live trading is committed with a documented rationale
-- **State persists** across restarts — the bot resumes where it left off if restarted within 2h
+Strategy development follows a pre-committed doctrine: mechanisms are declared before data is seen, proxies are tested independently with IC validation, and every decision has an explicit pass/fail record.
+
+**Start here for judges:** [`research/README.md`](research/README.md)
+
+Key decision documents:
+
+| Document | Content |
+|----------|---------|
+| [`research/10_pipeline_index.md`](research/10_pipeline_index.md) | Master index: every doctrine step → file → verdict |
+| [`research/H1_reversal/04_decision.md`](research/H1_reversal/04_decision.md) | H1 promotion record (IC=+0.057, t=12.7) |
+| [`research/H2_transitional_drift/04_decision.md`](research/H2_transitional_drift/04_decision.md) | H2C promotion record (IC=+0.042, t=9.85) |
+| [`research/portfolio/05_dual_portfolio_backtest.md`](research/portfolio/05_dual_portfolio_backtest.md) | Section [G]: combined backtest — all gates passed |
+| [`docs/STRATEGY.md`](docs/STRATEGY.md) | Full strategy writeup (mechanisms, formulas, risk rationale) |
+
+---
+
+## Logs (Screen 1 Compliance)
+
+| File | Content |
+|------|---------|
+| `logs/trades.csv` | Every order: timestamp, pair, side, qty, price, fill, fee |
+| `logs/state.jsonl` | Per-loop snapshot: regime, λ_t, C1 scores, positions, drawdown, h2c_capital_fraction |
+| `logs/errors.log` | Warnings, API errors, retry events |
+
+---
+
+## Competition Notes
+
+- **Round 1:** Mar 21 8pm HKT → Mar 31 (bot runs autonomously, no manual intervention)
+- **Every parameter change** during live trading is committed to git before the bot restarts
+- **State persists** across restarts — bot resumes where it left off within a 2h window
+- **Screen 1 compliance:** `logs/trades.csv` provides complete autonomous trade record
