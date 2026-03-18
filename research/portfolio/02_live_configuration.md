@@ -109,13 +109,30 @@ In a trending bull run (competition period), TREND_SUPPORTIVE is expected to dom
 
 ---
 
-## Research-Validated Parameter Changes (2026-03-17)
+## Research-Validated Parameter Changes
 
 From mechanism-specific backtest sweeps:
 
 | Config parameter | Old value | New value | Evidence |
 |-----------------|-----------|-----------|---------|
-| `STOP_LOSS_PCT` | −4% | **−4%** (confirmed) | H1 SL sweep: −4% best Calmar, stops <5%/period |
+| `STOP_LOSS_PCT` | −4% | **−3%** | H1 SL sweep robust plateau center (2026-03-18); −3% is median of ≥85%-of-peak plateau; −4% sits at plateau edge |
 | `EXIT_C1_THRESHOLD` | 0.20 | **0.25** | H1 exit sweep: Sortino 1.86 vs 1.32 at 0.20 |
 
 See `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` for full sweep tables.
+
+---
+
+## Cost Robustness (2026-03-18)
+
+Asymmetric fee testing (entry=maker 0.05%, exit=taker 0.10% for stops/emergency exits):
+
+| Engine | Scenario | Sortino | Calmar | MaxDD |
+|--------|----------|---------|--------|-------|
+| H1 | maker/maker | 2.69 | 11.73 | −13.6% |
+| H1 | **maker/taker** | **2.28** | **8.71** | −14.1% |
+| H1 | taker/taker | 1.88 | 6.25 | −14.6% |
+| Combined | maker/maker | 2.78 | 12.13 | −13.8% |
+| Combined | **maker/taker** | **2.36** | **9.09** | −14.3% |
+| Combined | taker/taker | 1.97 | 6.61 | −14.7% |
+
+Gate: Calmar > 0 in maker/taker → **PASS** for all engines.
