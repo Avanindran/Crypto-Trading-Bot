@@ -41,7 +41,7 @@ Fee:             0.05% per trade (maker; limit orders per competition rules)
 
 | Step | Doctrine Name | File | Key Verdict |
 |------|---------------|------|-------------|
-| 0 | OOS reserve | [H1_reversal/03_OOS_Reservation/oos_reservation.md](H1_reversal/03_OOS_Reservation/oos_reservation.md) | Dec–Jan 2025 holdout formally declared |
+| 0 | OOS reserve | [H1_reversal/00_OOS_Reservation/oos_reservation.md](H1_reversal/00_OOS_Reservation/oos_reservation.md) | Dec–Jan 2025 holdout formally declared |
 | 1 | Mechanism declaration | [H1_reversal/00_mechanism.md](H1_reversal/00_mechanism.md) / [H2_transitional_drift/00_mechanism.md](H2_transitional_drift/00_mechanism.md) | H1, H2, H5 declared before any data seen |
 | 2 | Proxy commitment | [H1_reversal/01_Proxies/00_proxy_universe.md](H1_reversal/01_Proxies/00_proxy_universe.md) / [H2_transitional_drift/01_Proxies/00_proxy_universe.md](H2_transitional_drift/01_Proxies/00_proxy_universe.md) | All proxies pre-committed; GP search space declared |
 | 3A | IC testing (CS family) | [H1_reversal/02_Candidates/Signal/01_ic_results.md](H1_reversal/02_Candidates/Signal/01_ic_results.md) | H1_neg_c1, H5_neg_vol pass; H5_sharpe, H6 all fail |
@@ -52,7 +52,7 @@ Fee:             0.05% per trade (maker; limit orders per competition rules)
 | 3D | H2 mechanism test | [H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md](H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md) | H2 CONFIRMED — IC uplift = +0.087 when BTC moves |
 | 3C | Bare signal vector | [H1_reversal/02_Candidates/Strategy/01_vector_tests.md](H1_reversal/02_Candidates/Strategy/01_vector_tests.md) Part A | PASS (Sharpe=1.87, MaxDD=−34%, HitRate=51.5%) |
 | 4A (H1) | C2 hazard modifiers | [H1_reversal/01_Proxies/Hazard_C2/](H1_reversal/01_Proxies/Hazard_C2/) + [overlays/regime/03_decision.md](overlays/regime/03_decision.md) | HAZ_BTC_VOL_Z APPROVED; HAZ_FNG_EXTREME APPROVED; 4 others REJECTED |
-| 4B (H1) | C3 maturity modifiers | [H1_reversal/01_Proxies/Maturity_C3/](H1_reversal/01_Proxies/Maturity_C3/) + [overlays/maturity/03_decision.md](overlays/maturity/03_decision.md) | MAT_VOL_RATIO APPROVED (+0.064); MAT_FUNDING_RATE APPROVED (+0.010); 5 others REJECTED |
+| 4B (H1) | C3 maturity modifiers | [H1_reversal/01_Proxies/Maturity_C3/](H1_reversal/01_Proxies/Maturity_C3/) + [overlays/maturity/02_decision.md](overlays/maturity/02_decision.md) | MAT_VOL_RATIO APPROVED (+0.064); MAT_FUNDING_RATE APPROVED (+0.010); 5 others REJECTED |
 | 4A (H2) | H2 C2 hazard gates | [H2_transitional_drift/01_Proxies/Hazard_C2/](H2_transitional_drift/01_Proxies/Hazard_C2/) + [H2_transitional_drift/02_Candidates/Signal/03_modifier_results.md](H2_transitional_drift/02_Candidates/Signal/03_modifier_results.md) | HAZ2_BTC_VOL_Z APPROVED (+13.4% MaxDD); HAZ2_CORR_COLLAPSE REJECTED |
 | 4B (H2) | H2 C3 diffusion maturity | [H2_transitional_drift/01_Proxies/Maturity_C3/](H2_transitional_drift/01_Proxies/Maturity_C3/) + [H2_transitional_drift/02_Candidates/Signal/03_modifier_results.md](H2_transitional_drift/02_Candidates/Signal/03_modifier_results.md) | MAT2_TIME_DECAY APPROVED (+72% IC uplift); MAT2_GAP_REMAINING REJECTED |
 | 5 | Full signal vector | [H1_reversal/02_Candidates/Strategy/01_vector_tests.md](H1_reversal/02_Candidates/Strategy/01_vector_tests.md) Part D | Monotone Sharpe: 1.87 → 3.02 → 3.16 |
