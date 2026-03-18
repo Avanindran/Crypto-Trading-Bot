@@ -15,7 +15,7 @@ Decision gate:
   IC > 0.03  AND  t > 1.5              →  promotion-quality
 
 Run:
-  python -X utf8 research/signal_search.py
+  python -X utf8 research/tools/signal_search.py
 
 Outputs:
   research/H1_reversal/03_results/01_ic_results.md       (H1 CS family)
@@ -34,7 +34,8 @@ from typing import Dict, List, Optional, Tuple
 
 # ── Import shared utilities from ic_validation_extended ────────────────────────
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -71,9 +72,9 @@ IC_PROMOTE_MIN  = 0.03                    # IC for promotion-quality
 TSTAT_PROMOTE   = 1.5                     # t for promotion-quality
 
 # Output directories
-H1_RESULTS_DIR   = os.path.join(_here, "H1_reversal", "03_results")
-H2_RESULTS_DIR   = os.path.join(_here, "H2_transitional_drift", "03_results")
-CHARTS_VAL_DIR   = os.path.join(_here, "charts", "03_validation")
+H1_RESULTS_DIR   = os.path.join(_root, "H1_reversal", "03_results")
+H2_RESULTS_DIR   = os.path.join(_root, "H2_transitional_drift", "03_results")
+CHARTS_VAL_DIR   = os.path.join(_root, "charts", "03_validation")
 os.makedirs(H1_RESULTS_DIR, exist_ok=True)
 os.makedirs(H2_RESULTS_DIR, exist_ok=True)
 os.makedirs(CHARTS_VAL_DIR, exist_ok=True)
@@ -86,10 +87,16 @@ CS_SIGNALS = [
     "H1_neg_r1h", "H1_neg_r2h", "H1_neg_r6h", "H1_neg_r24h", "H1_neg_c1",
     # ── H2a: BTC catch-up, CS-framed (collapses to H1) ───────────────────────
     "H2a_neg_rel_btc_r1h", "H2a_neg_rel_btc_r2h", "H2a_neg_rel_btc_r6h",
-    # ── H2c: beta-adjusted divergence (NEW — non-collapsed H2 proxy) ─────────
+    # ── H2c: beta-adjusted divergence (non-collapsed H2 proxy) ──────────────
     "H2c_beta_adj_gap",
-    # ── H2d: BTC-gated H1 (NEW — operationalises mechanism test finding) ─────
+    # ── H2d: BTC-gated H1 (operationalises mechanism test finding) ───────────
     "H2d_btcgated_h1",
+    # ── H2e: H2c variant — 1h BTC window (fresher, noisier) ──────────────────
+    "H2e_horizon_1h",
+    # ── H2f: H2c variant — 4h BTC window (wider window, staler gap) ──────────
+    "H2f_horizon_4h",
+    # ── H2g: H2c direction-conditional — BTC-up only (cleaner rationale) ─────
+    "H2g_direction_cond",
     # ── H5: vol-adjusted stability filter ────────────────────────────────────
     "H5_sharpe_6h", "H5_sharpe_24h", "H5_sortino_6h", "H5_neg_vol",
     # ── H6: candle persistence (expected to fail) ────────────────────────────
@@ -375,7 +382,7 @@ def run_signal_search(
         if len(h2c_raw) >= n_min:
             h2c_signals["H2c_beta_adj_gap"] = cross_sectional_z(h2c_raw)
 
-        # ── H2d: BTC-gated H1 (NEW — conditional on BTC having moved) ───────────
+        # ── H2d: BTC-gated H1 (conditional on BTC having moved) ─────────────────
         # H1 signal fires only when |r_BTC,2h| >= 0.5%. When BTC is flat, both
         # signals are zeroed. Operationalises the mechanism test finding
         # (IC uplift +0.087 when BTC moves).
@@ -388,6 +395,50 @@ def run_signal_search(
         else:
             # BTC flat — zero out signal (no expected diffusion)
             h2d_signals["H2d_btcgated_h1"] = {p: 0.0 for p in r2h_raw}
+
+        # ── H2e: Beta-adjusted gap, 1h BTC window (fresher, noisier) ─────────────
+        # Same β as H2c (48h rolling OLS) but gap measured on 1h BTC return.
+        # Tests whether tighter window improves IC via fresher diffusion signal.
+        h2e_raw: Dict[str, float] = {}
+        if btc_r1h is not None:
+            for pair in r1h_raw:
+                beta = rolling_beta(beta_hist.get(pair, []))
+                if beta is not None:
+                    h2e_raw[pair] = beta * btc_r1h - r1h_raw[pair]
+        h2e_signals: Dict[str, Dict[str, float]] = {}
+        if len(h2e_raw) >= n_min:
+            h2e_signals["H2e_horizon_1h"] = cross_sectional_z(h2e_raw)
+
+        # ── H2f: Beta-adjusted gap, 4h BTC window (wider, staler gap) ────────────
+        # Tests whether longer BTC return window captures extended diffusion cycles.
+        # Computes r4h on-demand for BTC and each pair.
+        btc_r4h = compute_return(btc_prices, ts, 4.0)
+        h2f_raw: Dict[str, float] = {}
+        if btc_r4h is not None:
+            for pair in r6h_raw:   # r6h_raw keys ≈ active pairs with data
+                r4h_pair = compute_return(all_prices[pair], ts, 4.0)
+                if r4h_pair is None:
+                    continue
+                beta = rolling_beta(beta_hist.get(pair, []))
+                if beta is not None:
+                    h2f_raw[pair] = beta * btc_r4h - r4h_pair
+        h2f_signals: Dict[str, Dict[str, float]] = {}
+        if len(h2f_raw) >= n_min:
+            h2f_signals["H2f_horizon_4h"] = cross_sectional_z(h2f_raw)
+
+        # ── H2g: H2c direction-conditional — BTC-up only ─────────────────────────
+        # Reuses h2c_raw. Signal active only when r_BTC,2h > 0 (positive gaps
+        # cleaner: alt lagged BTC upside). Zeroed when BTC fell or flat.
+        # Tests whether restricting to BTC-up regime improves IC by removing
+        # ambiguous negative-BTC gaps.
+        h2g_signals: Dict[str, Dict[str, float]] = {}
+        if btc_r2h is not None and len(h2c_raw) >= n_min:
+            if btc_r2h > 0:
+                h2g_signals["H2g_direction_cond"] = cross_sectional_z(h2c_raw)
+            else:
+                h2g_signals["H2g_direction_cond"] = {p: 0.0 for p in h2c_raw}
+        elif len(h2c_raw) >= n_min:
+            h2g_signals["H2g_direction_cond"] = {p: 0.0 for p in h2c_raw}
 
         # ── H5: Volatility-adjusted stability filter ────────────────────────────
         h5_raw: Dict[str, Dict[str, float]] = {
@@ -507,6 +558,9 @@ def run_signal_search(
         all_cs_at_ts.update(h2a_signals)
         all_cs_at_ts.update(h2c_signals)
         all_cs_at_ts.update(h2d_signals)
+        all_cs_at_ts.update(h2e_signals)
+        all_cs_at_ts.update(h2f_signals)
+        all_cs_at_ts.update(h2g_signals)
         all_cs_at_ts.update(h5_signals)
         all_cs_at_ts.update(h6_signals)
         all_cs_at_ts.update(ts_signals)
@@ -1004,7 +1058,7 @@ def main() -> None:
         h2b_pairs=h2b_pairs,
     )
 
-    # TS variants + H2c/H2d (new proxies)
+    # TS variants + H2c/H2d (existing proxies)
     write_hypothesis_md(
         "H1_TS_and_H2_new",
         "TS Overshoot Variants (H1_TS) + Non-Collapsed H2 Proxies (H2c/H2d)",
@@ -1012,6 +1066,19 @@ def main() -> None:
          "H2c_beta_adj_gap", "H2d_btcgated_h1"],
         cs_period_ics,
         output_path=os.path.join(H1_RESULTS_DIR, "05_ts_variant_search.md"),
+    )
+
+    # H2 C1 variant search (H2E/H2F/H2G — horizon and direction variants)
+    _h2_variants_dir = os.path.join(
+        _here, "H2_transitional_drift", "02_Candidates", "Signal"
+    )
+    os.makedirs(_h2_variants_dir, exist_ok=True)
+    write_hypothesis_md(
+        "H2_C1_variants",
+        "H2C BTC-Diffusion C1 Variants (H2E: 1h horizon, H2F: 4h horizon, H2G: direction-conditional)",
+        ["H2e_horizon_1h", "H2f_horizon_4h", "H2g_direction_cond"],
+        cs_period_ics,
+        output_path=os.path.join(_h2_variants_dir, "05_h2_variant_search.md"),
     )
 
     any_pass = print_summary_table(cs_period_ics, h2b_pairs)

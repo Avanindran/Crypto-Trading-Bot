@@ -19,7 +19,7 @@ Decision gates:
   - Config C MaxDD improves >= 10% relative vs Config A
 
 Run:
-    python -X utf8 research/regime_tests.py
+    python -X utf8 research/tools/regime_tests.py
 
 Output:
     research/12_regime_allocation.md
@@ -34,7 +34,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -69,7 +70,7 @@ VOL_Z_NEUTRAL = 0.50    # BTC vol z < this AND MPI OK -> TREND_SUPPORTIVE
 MPI_LOOKBACK  = 48      # hours for MPI (momentum persistence index)
 MPI_THRESHOLD = 0.50    # BTC pos-return fraction threshold for TREND
 
-OUTPUT_FILE = os.path.join(_here, "overlays", "portfolio_construction", "02_regime_allocation.md")
+OUTPUT_FILE = os.path.join(_root, "overlays", "portfolio_construction", "02_regime_allocation.md")
 
 
 # ---------------------------------------------------------------------------

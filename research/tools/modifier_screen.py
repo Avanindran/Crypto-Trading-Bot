@@ -25,7 +25,7 @@ C3 proxies tested (7):
   MAT_CONSEC_UP      fraction of last 6 bars up (positive ret) > 0.75 [NEW]
 
 Run:
-  python -X utf8 research/modifier_screen.py
+  python -X utf8 research/tools/modifier_screen.py
 
 Outputs:
   research/H1_reversal/01_Proxies/Hazard_C2/<PROXY>/02_modifier_screen.md  (×6)
@@ -45,7 +45,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -66,10 +67,10 @@ from ic_validation_extended import (  # noqa: E402
 
 # ── Output directories ─────────────────────────────────────────────────────────
 
-PROXIES_DIR   = os.path.join(_here, "H1_reversal", "01_Proxies")
+PROXIES_DIR   = os.path.join(_root, "H1_reversal", "01_Proxies")
 C2_BASE_DIR   = os.path.join(PROXIES_DIR, "Hazard_C2")
 C3_BASE_DIR   = os.path.join(PROXIES_DIR, "Maturity_C3")
-CHARTS_DIR    = os.path.join(_here, "charts", "modifier_screens")
+CHARTS_DIR    = os.path.join(_root, "charts", "modifier_screens")
 
 os.makedirs(C2_BASE_DIR, exist_ok=True)
 os.makedirs(C3_BASE_DIR, exist_ok=True)

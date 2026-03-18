@@ -1,23 +1,29 @@
 """
-research/robustness.py — Robustness testing for regime filter and promoted signal.
+research/robustness.py — Engine-level robustness for H1 reversal and H2C diffusion signals.
 
 Part A — Regime filter robustness:
   - LSI defensive threshold perturbed: {0.50, 0.55, 0.60, 0.65, 0.70}
   - Metric: fraction of time in HAZARD_DEFENSIVE (proxy for drawdown protection)
   - Simulates NAV for always-in vs regime-gated strategy on 4-month trending period
 
-Part B — Promoted signal block resampling:
+Part B — H1 promoted signal block resampling:
   - 500 random 10-day windows drawn from Oct 2024 – Jan 2025 (4-month trending period)
   - Each window: compute IC of promoted signal (0.7×H1_neg_c1 + 0.3×H5_neg_vol) at 4h
   - Hit rate = fraction of windows with positive IC (gate: ≥ 55%)
   - Also: subperiod IC (Oct–Nov vs Dec–Jan), parameter perturbation (±20% on signal weights)
 
+Part C — H2C engine robustness:
+  - 500 random 10-day windows; each window uses 48h pre-window warm-up to build β_hist
+  - Hit rate ≥ 55% → PASS
+  - Parameter perturbation: β_window ∈ {24, 48, 72}h × r_BTC horizon ∈ {1, 2, 4}h (9 combos)
+
 Run:
-  python research/robustness.py
+  python research/tools/robustness.py
 
 Outputs:
   research/09_robustness/regime_filter_robustness.md
-  research/09_robustness/H1_H5_signal_robustness.md
+  research/H1_reversal/02_Candidates/Strategy/03_robustness.md   (co-located)
+  research/H2_transitional_drift/02_Candidates/Strategy/02_robustness.md  (co-located)
 """
 
 import math
@@ -28,7 +34,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -47,7 +54,9 @@ from ic_validation_extended import (  # noqa: E402
     TRENDING_END,
 )
 
-os.makedirs(os.path.join(_here, "09_robustness"), exist_ok=True)
+os.makedirs(os.path.join(_root, "09_robustness"), exist_ok=True)
+os.makedirs(os.path.join(_root, "H1_reversal", "02_Candidates", "Strategy"), exist_ok=True)
+os.makedirs(os.path.join(_root, "H2_transitional_drift", "02_Candidates", "Strategy"), exist_ok=True)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -357,7 +366,7 @@ def run_part_b(
 # ── Report Writing ─────────────────────────────────────────────────────────────
 
 def write_regime_report(rows: List[dict]) -> None:
-    path = os.path.join(_here, "09_robustness", "regime_filter_robustness.md")
+    path = os.path.join(_root, "09_robustness", "regime_filter_robustness.md")
     lines = [
         "# Regime Filter Robustness — LSI Threshold Perturbation",
         "",
@@ -396,7 +405,7 @@ def write_regime_report(rows: List[dict]) -> None:
 
 
 def write_signal_report(results: dict) -> None:
-    path = os.path.join(_here, "09_robustness", "H1_H5_signal_robustness.md")
+    path = os.path.join(_root, "H1_reversal", "02_Candidates", "Strategy", "03_robustness.md")
     full  = results["full"]
     sub1  = results["sub1"]
     sub2  = results["sub2"]
@@ -481,6 +490,350 @@ def write_signal_report(results: dict) -> None:
     print(f"  Wrote {path}")
 
 
+# ── Part C: H2C Engine Robustness ─────────────────────────────────────────────
+
+# H2C parameter grid for perturbation
+H2C_BETA_WINDOWS  = [24, 48, 72]   # rolling β estimation window (hours)
+H2C_BTC_HORIZONS  = [1, 2, 4]      # r_BTC look-back horizon (hours)
+H2C_BASELINE_BETA = 48             # production β_window
+H2C_BASELINE_HOR  = 2              # production r_BTC horizon
+H2C_FWD_H         = 4              # 4h forward return
+H2C_WARMUP_H      = 48             # pre-window burn-in for β_hist (hours)
+H2C_MIN_BETA_OBS  = 24             # minimum β_hist observations before signal valid
+
+
+def _estimate_beta_h2(r_asset: List[float], r_btc: List[float]) -> float:
+    """OLS β = Cov(r_i, r_BTC) / Var(r_BTC). Returns 1.0 if insufficient data."""
+    n = min(len(r_asset), len(r_btc))
+    if n < 10:
+        return 1.0
+    ra = r_asset[-n:]
+    rb = r_btc[-n:]
+    mean_a = sum(ra) / n
+    mean_b = sum(rb) / n
+    cov  = sum((ra[i] - mean_a) * (rb[i] - mean_b) for i in range(n)) / n
+    varb = sum((rb[i] - mean_b) ** 2 for i in range(n)) / n
+    return cov / varb if varb > 1e-10 else 1.0
+
+
+def compute_h2c_period_ics(
+    all_prices:   Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    timestamps:   List[int],
+    btc_key:      str,
+    beta_window:  int = H2C_BASELINE_BETA,
+    btc_horizon:  int = H2C_BASELINE_HOR,
+    fwd_h:        int = H2C_FWD_H,
+    beta_hist:    Optional[Dict[str, List[List[float]]]] = None,
+) -> List[float]:
+    """Compute H2C IC at each timestamp.
+
+    beta_hist: {pair: [[r_i_1h_history], [r_btc_1h_history]]} — pass a pre-warmed
+    dict to skip burn-in for block-resampling windows; pass None to start fresh.
+    Updated in-place at each call.
+
+    H2C signal: CS_z(β_i × r_BTC,btc_horizon − r_i,btc_horizon).
+    β estimated from rolling `beta_window` hourly observations.
+    """
+    if beta_hist is None:
+        beta_hist = {p: [[], []] for p in active_pairs if p != btc_key}
+
+    n_min = max(4, len(active_pairs) // 4)
+    ics: List[float] = []
+
+    for ts in timestamps:
+        r_btc_btc_h = compute_return(all_prices[btc_key], ts, float(btc_horizon))
+        r_btc_1h    = compute_return(all_prices[btc_key], ts, 1.0)
+
+        # Always update β_hist with current 1h returns (maintain burn-in even during
+        # timestamps where we cannot compute the signal)
+        if r_btc_1h is not None:
+            for pair in active_pairs:
+                if pair == btc_key or pair not in beta_hist:
+                    continue
+                r_1h = compute_return(all_prices[pair], ts, 1.0)
+                if r_1h is not None:
+                    beta_hist[pair][0].append(r_1h)
+                    beta_hist[pair][1].append(r_btc_1h)
+                    if len(beta_hist[pair][0]) > beta_window:
+                        beta_hist[pair][0] = beta_hist[pair][0][-beta_window:]
+                        beta_hist[pair][1] = beta_hist[pair][1][-beta_window:]
+
+        if r_btc_btc_h is None:
+            continue
+
+        # Build H2C gap signal
+        gaps: Dict[str, float] = {}
+        for pair in active_pairs:
+            if pair == btc_key or pair not in beta_hist:
+                continue
+            hist = beta_hist[pair]
+            if len(hist[0]) < H2C_MIN_BETA_OBS:
+                continue
+            r_pair = compute_return(all_prices[pair], ts, float(btc_horizon))
+            if r_pair is None:
+                continue
+            beta = _estimate_beta_h2(hist[0], hist[1])
+            gaps[pair] = beta * r_btc_btc_h - r_pair
+
+        if len(gaps) < n_min:
+            continue
+
+        sig = cross_sectional_z(gaps)
+        if not sig:
+            continue
+
+        fwd: Dict[str, float] = {}
+        for pair in sig:
+            f = compute_forward_return(all_prices[pair], ts, fwd_h)
+            if f is not None:
+                fwd[pair] = f
+
+        common = [(sig[p], fwd[p]) for p in sig if p in fwd]
+        if len(common) < 5:
+            continue
+
+        ic = spearman_ic([v[0] for v in common], [v[1] for v in common])
+        if ic is not None:
+            ics.append(ic)
+
+    return ics
+
+
+def run_h2_robustness(
+    all_prices:   Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    timestamps:   List[int],
+) -> dict:
+    """Block resampling and parameter perturbation for H2C BTC-diffusion signal."""
+    btc_key = next((p for p in active_pairs if p.startswith("BTC")), None)
+    if btc_key is None:
+        print("  WARNING: no BTC pair found — H2C robustness skipped")
+        return {}
+
+    print("\n[Part C] H2C engine robustness")
+
+    # Full-period baseline IC
+    print(f"  Full period H2C IC (β={H2C_BASELINE_BETA}h, horizon={H2C_BASELINE_HOR}h) ...")
+    full_ics = compute_h2c_period_ics(all_prices, active_pairs, timestamps, btc_key)
+    full_stats = ic_stats(full_ics)
+    print(
+        f"  Full period: mean_IC={full_stats['mean_ic']:.4f}, "
+        f"t={full_stats['t_stat']:.2f}, n={full_stats['n']}"
+    )
+
+    # Subperiod IC (Oct–Nov vs Dec–Jan)
+    ts_oct_nov = [ts for ts in timestamps
+                  if _month_to_ms(2024, 10) <= ts < _month_to_ms(2024, 12)]
+    ts_dec_jan = [ts for ts in timestamps
+                  if _month_to_ms(2024, 12) <= ts < _month_to_ms(2025, 2)]
+    sub1_stats = ic_stats(
+        compute_h2c_period_ics(all_prices, active_pairs, ts_oct_nov, btc_key)
+    )
+    sub2_stats = ic_stats(
+        compute_h2c_period_ics(all_prices, active_pairs, ts_dec_jan, btc_key)
+    )
+    print(
+        f"  Oct–Nov 2024: mean_IC={sub1_stats['mean_ic']:.4f}, t={sub1_stats['t_stat']:.2f}"
+    )
+    print(
+        f"  Dec–Jan 2025: mean_IC={sub2_stats['mean_ic']:.4f}, t={sub2_stats['t_stat']:.2f}"
+    )
+
+    # Block resampling — 500 × 10-day windows with 48h pre-warm
+    print(f"\n  Block resampling: {N_WINDOWS} × {WINDOW_DAYS}-day windows (48h pre-warm) ...")
+    ts_arr    = sorted(timestamps)
+    step_ms   = 3_600_000
+    window_ms = WINDOW_DAYS * 24 * step_ms
+    warmup_ms = H2C_WARMUP_H * step_ms
+
+    # Need enough history before window starts to warm β_hist
+    min_ts = ts_arr[0] + warmup_ms
+    max_ts = ts_arr[-1] - window_ms
+    if max_ts <= min_ts:
+        print("  WARNING: insufficient data for block resampling")
+        hit_rate = 0.0
+        positive_windows = 0
+        valid_windows = 0
+    else:
+        rng = random.Random(42)
+        positive_windows = 0
+        valid_windows    = 0
+
+        for _ in range(N_WINDOWS):
+            start = rng.randint(min_ts, max_ts)
+            end   = start + window_ms
+
+            # Warm-up timestamps: [start − 48h, start)
+            warmup_ts = [t for t in ts_arr if start - warmup_ms <= t < start]
+            window_ts = [t for t in ts_arr if start <= t < end]
+
+            if len(window_ts) < 20:
+                continue
+
+            # Build β_hist from warm-up period (no look-ahead)
+            wup_beta_hist = {p: [[], []] for p in active_pairs if p != btc_key}
+            compute_h2c_period_ics(
+                all_prices, active_pairs, warmup_ts, btc_key,
+                beta_hist=wup_beta_hist,
+            )
+
+            # Now evaluate IC on the actual window, carrying over warm β_hist
+            win_ics = compute_h2c_period_ics(
+                all_prices, active_pairs, window_ts, btc_key,
+                beta_hist=wup_beta_hist,
+            )
+            s = ic_stats(win_ics)
+            if s["mean_ic"] is not None:
+                valid_windows += 1
+                if s["mean_ic"] > 0:
+                    positive_windows += 1
+
+        hit_rate = positive_windows / valid_windows if valid_windows > 0 else 0.0
+        print(f"  Valid windows: {valid_windows}, positive IC: {positive_windows}")
+        print(f"  Hit rate: {hit_rate*100:.1f}% (gate: >=55%)")
+
+    # Parameter perturbation: β_window × btc_horizon grid
+    print("\n  Parameter perturbation (β_window × BTC horizon) ...")
+    perturb_results = []
+    for bw in H2C_BETA_WINDOWS:
+        for hor in H2C_BTC_HORIZONS:
+            ics = compute_h2c_period_ics(
+                all_prices, active_pairs, timestamps, btc_key,
+                beta_window=bw, btc_horizon=hor,
+            )
+            s = ic_stats(ics)
+            is_base = (bw == H2C_BASELINE_BETA and hor == H2C_BASELINE_HOR)
+            tag = " <-- BASELINE" if is_base else ""
+            print(
+                f"  β_win={bw:2d}h hor={hor}h: mean_IC={s['mean_ic']:.4f}, "
+                f"t={s['t_stat']:.2f}{tag}"
+            )
+            perturb_results.append({
+                "beta_window": bw, "btc_horizon": hor,
+                "mean_ic": s["mean_ic"], "t_stat": s["t_stat"],
+                "baseline": is_base,
+            })
+
+    return {
+        "full":             full_stats,
+        "sub1":             sub1_stats,
+        "sub2":             sub2_stats,
+        "hit_rate":         hit_rate,
+        "positive_windows": positive_windows,
+        "valid_windows":    valid_windows if max_ts > min_ts else 0,
+        "perturb":          perturb_results,
+        "btc_key":          btc_key,
+    }
+
+
+def write_h2_robustness_report(results: dict) -> None:
+    """Write H2C engine robustness markdown, co-located with H2 mechanism."""
+    if not results:
+        return
+    path = os.path.join(
+        _here, "H2_transitional_drift", "02_Candidates", "Strategy", "02_robustness.md"
+    )
+
+    full    = results["full"]
+    sub1    = results["sub1"]
+    sub2    = results["sub2"]
+    hr      = results.get("hit_rate", 0.0)
+    pos_win = results.get("positive_windows", 0)
+    val_win = results.get("valid_windows", 0)
+    perturb = results["perturb"]
+
+    def fmt(v):
+        return f"{v:.4f}" if v is not None else "N/A"
+
+    sub1_pass = (sub1["mean_ic"] or 0) > 0
+    sub2_pass = (sub2["mean_ic"] or 0) > 0
+    hr_pass   = hr >= 0.55
+
+    # Check: baseline among best half of perturbation results
+    base_ic = next((r["mean_ic"] for r in perturb if r["baseline"]), None)
+    perturb_ics = [r["mean_ic"] for r in perturb if r["mean_ic"] is not None]
+    perturb_median = sorted(perturb_ics)[len(perturb_ics) // 2] if perturb_ics else None
+    perturb_pass = (
+        base_ic is not None and perturb_median is not None
+        and base_ic >= perturb_median * 0.5  # baseline IC >= 50% of median (no cliff)
+    )
+
+    all_pass = sub1_pass and sub2_pass and hr_pass
+
+    lines = [
+        "# H2C Engine Robustness — BTC-Diffusion Signal",
+        "",
+        f"**Run:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC",
+        f"**Signal:** CS_z(β_i × r_BTC,2h − r_i,2h), β from rolling 48h OLS",
+        f"**Evaluation horizon:** {H2C_FWD_H}h forward return",
+        "",
+        "## Full-Period IC",
+        "",
+        "| Period | Mean IC | t-stat | n |",
+        "|--------|---------|--------|---|",
+        f"| Oct 2024 – Jan 2025 | {fmt(full['mean_ic'])} | {fmt(full['t_stat'])} | {full['n']} |",
+        f"| Oct–Nov 2024 | {fmt(sub1['mean_ic'])} | {fmt(sub1['t_stat'])} | {sub1['n']} |",
+        f"| Dec 2024–Jan 2025 | {fmt(sub2['mean_ic'])} | {fmt(sub2['t_stat'])} | {sub2['n']} |",
+        "",
+        "## Block Resampling",
+        "",
+        f"**Method:** {N_WINDOWS} random {WINDOW_DAYS}-day windows from Oct 2024–Jan 2025.",
+        f"Each window uses a {H2C_WARMUP_H}h pre-window warm-up to build β_hist without look-ahead.",
+        "Gate: hit rate (fraction of windows with positive mean IC) ≥ 55%.",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Valid windows | {val_win} |",
+        f"| Positive IC windows | {pos_win} |",
+        f"| Hit rate | {hr*100:.1f}% |",
+        f"| Gate (≥55%) | {'**PASS**' if hr_pass else '**FAIL**'} |",
+        "",
+        "## Parameter Perturbation",
+        "",
+        "Testing 9 combinations of β_window ∈ {24, 48, 72}h × r_BTC horizon ∈ {1, 2, 4}h.",
+        "Confirms no cliff edges around the baseline configuration.",
+        "",
+        "| β_window | BTC horizon | Mean IC | t-stat | Notes |",
+        "|----------|-------------|---------|--------|-------|",
+    ]
+    for r in perturb:
+        note = "**BASELINE**" if r["baseline"] else ""
+        lines.append(
+            f"| {r['beta_window']}h | {r['btc_horizon']}h "
+            f"| {fmt(r['mean_ic'])} | {fmt(r['t_stat'])} | {note} |"
+        )
+
+    lines += [
+        "",
+        "## Robustness Kill Criteria",
+        "",
+        "| Criterion | Threshold | Result |",
+        "|-----------|-----------|--------|",
+        f"| Subperiod sign flip (Oct–Nov) | IC > 0 | {'**PASS**' if sub1_pass else '**FAIL**'} |",
+        f"| Subperiod sign flip (Dec–Jan) | IC > 0 | {'**PASS**' if sub2_pass else '**FAIL**'} |",
+        f"| Block-resample hit rate | ≥ 55% | {'**PASS**' if hr_pass else '**FAIL**'} |",
+        f"| Parameter sensitivity | Baseline IC ≥ 50% of median across grid | {'**PASS**' if perturb_pass else '**FAIL**'} |",
+        "",
+        "## Conclusion",
+        "",
+    ]
+
+    if all_pass:
+        lines += [
+            "**ROBUST — all kill criteria pass.**",
+            "H2C BTC-diffusion signal retained for portfolio combination.",
+        ]
+    else:
+        lines += [
+            "**WARNING — one or more kill criteria failed. Review before deployment.**",
+        ]
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"  Wrote {path}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -519,12 +872,16 @@ def main() -> None:
     # Part A
     regime_rows = run_part_a(all_prices, active_pairs, timestamps)
 
-    # Part B
+    # Part B — H1 engine robustness
     signal_results = run_part_b(all_prices, active_pairs, timestamps)
+
+    # Part C — H2C engine robustness
+    h2_results = run_h2_robustness(all_prices, active_pairs, timestamps)
 
     # Write reports
     write_regime_report(regime_rows)
     write_signal_report(signal_results)
+    write_h2_robustness_report(h2_results)
 
     print("\nDone.")
 

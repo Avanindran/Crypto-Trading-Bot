@@ -10,7 +10,7 @@ Tests weighted linear combinations of passing terminals:
   Holdout:   Dec 2024–Jan 2025 (last 2 months)
 
 Run:
-  python research/gp_search.py
+  python research/tools/gp_search.py
 
 Outputs:
   research/04_gp_search/H1_H5_gp_results.md
@@ -23,7 +23,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -55,8 +56,8 @@ HOLDOUT_END   = (2025,  1)
 IC_PROMOTE_MIN = 0.03
 TSTAT_PROMOTE  = 1.5
 
-GP_RESULTS_FILE = os.path.join(_here, "H1_reversal", "03_results", "04_combination_search.md")
-CHARTS_GP_DIR   = os.path.join(_here, "charts", "04_gp_search")
+GP_RESULTS_FILE = os.path.join(_root, "H1_reversal", "03_results", "04_combination_search.md")
+CHARTS_GP_DIR   = os.path.join(_root, "charts", "04_gp_search")
 os.makedirs(os.path.dirname(GP_RESULTS_FILE), exist_ok=True)
 os.makedirs(CHARTS_GP_DIR, exist_ok=True)
 

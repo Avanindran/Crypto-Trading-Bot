@@ -43,6 +43,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # ── Import vector_tests for signal functions and run_backtest ──────────────────
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)
+sys.path.insert(0, os.path.join(_here, 'tools'))
 import vector_tests as _vt  # noqa: E402
 
 # ── Output paths (co-located with mechanism) ──────────────────────────────────
@@ -232,11 +233,13 @@ def _compute_h2c_signal(
     ts: int,
     btc_key: str,
     beta_hist: Dict[str, List[List[float]]],
+    mat2_time_thresh: Optional[float] = None,
 ) -> Optional[Dict[str, float]]:
     """H2C: CS_z(β_i × r_BTC,2h − r_i,2h).
 
     beta_hist: pair → ([r_i_hourly_48], [r_btc_hourly_48]) — updated in-place.
     Requires 24+ hours of β history (48h window, skip first 24h).
+    mat2_time_thresh: if set, apply MAT2_TIME_DECAY gate — skip stale diffusion windows.
     """
     r_btc_2h = _vt.compute_return(all_prices[btc_key], ts, 2.0)
     if r_btc_2h is None:
@@ -256,6 +259,12 @@ def _compute_h2c_signal(
                     beta_hist[pair][0] = beta_hist[pair][0][-48:]
                     beta_hist[pair][1] = beta_hist[pair][1][-48:]
 
+    # MAT2_TIME_DECAY gate: skip if diffusion window is stale
+    if mat2_time_thresh is not None:
+        time_decay = _compute_btc_time_decay(all_prices[btc_key], ts)
+        if time_decay is None or time_decay >= mat2_time_thresh:
+            return None
+
     gaps: Dict[str, float] = {}
     for pair in active_pairs:
         if pair == btc_key:
@@ -272,6 +281,27 @@ def _compute_h2c_signal(
     if len(gaps) < 4:
         return None
     return _vt.cross_sectional_z(gaps)
+
+
+def _compute_btc_time_decay(btc_prices: Dict[int, float], ts: int) -> Optional[float]:
+    """MAT2_TIME_DECAY: (t − t_peak_BTC) / 6h.
+
+    t_peak = argmax_{ts-6h ≤ t' ≤ ts} |r_BTC,1h(t')|
+    Returns float in [0, 1]: 0.0 = fresh BTC move (just happened), 1.0 = 6h ago.
+    Returns None if BTC barely moved (|r_peak| < 0.001) — not an active H2 period.
+    """
+    MS_PER_H = 3_600_000
+    best_abs_r = 0.0
+    best_lag = 0
+    for lag in range(7):  # lags 0h..6h
+        t_check = ts - lag * MS_PER_H
+        r = _vt.compute_return(btc_prices, t_check, 1.0)
+        if r is not None and abs(r) > best_abs_r:
+            best_abs_r = abs(r)
+            best_lag = lag
+    if best_abs_r < 0.001:
+        return None  # BTC quiescent — no active diffusion window
+    return best_lag / 6.0
 
 
 # ── Overlay backtest engine ────────────────────────────────────────────────────
@@ -464,20 +494,46 @@ def _run_overlay_engine(
 
 # ── Selection helpers ──────────────────────────────────────────────────────────
 
-def _best_calmar(results: List[dict], baseline_calmar: float) -> dict:
-    """Return the result with highest Calmar that is ≥ 1.2× baseline."""
-    candidates = [r for r in results if r.get("calmar", 0) >= 1.2 * baseline_calmar]
-    if not candidates:
-        candidates = results  # fall back to any positive improvement
-    return max(candidates, key=lambda r: r.get("calmar", 0))
+def _robust_select(
+    results: List[dict],
+    metric: str,
+    param_key: str,
+    threshold: float = 0.85,
+    calmar_min: float = 0.0,
+) -> dict:
+    """Select the robust center of the performance plateau.
 
+    1. Filter to results with calmar >= calmar_min.
+    2. Find peak = max(metric) in filtered set.
+    3. Plateau = all results where metric >= threshold × peak.
+    4. Sort plateau by param_key value; return the median element.
 
-def _best_sortino(results: List[dict], calmar_min: float) -> dict:
-    """Return the result with highest Sortino while Calmar ≥ calmar_min."""
-    candidates = [r for r in results if r.get("calmar", 0) >= calmar_min]
-    if not candidates:
-        candidates = results
-    return max(candidates, key=lambda r: r.get("sortino", 0))
+    Avoids picking cliff-edge peaks: if performance degrades sharply when
+    the parameter shifts by one step, the plateau will be narrow or
+    single-element, and we pick that single point conservatively.
+    Falls back to best metric if no result meets calmar_min.
+    None param values sort last (treated as sentinel beyond numeric range).
+    """
+    def _sort_key(r):
+        v = r.get(param_key)
+        if v is None:
+            return float('inf')
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float('inf')
+
+    eligible = [r for r in results if r.get("calmar", 0) >= calmar_min]
+    if not eligible:
+        eligible = results
+
+    peak_metric = max(r.get(metric, float('-inf')) for r in eligible)
+    plateau = [r for r in eligible if r.get(metric, 0) >= threshold * peak_metric]
+    if not plateau:
+        plateau = [max(eligible, key=lambda r: r.get(metric, 0))]
+
+    sorted_plateau = sorted(plateau, key=_sort_key)
+    return sorted_plateau[len(sorted_plateau) // 2]
 
 
 # ── Section A: H1 Reversal ────────────────────────────────────────────────────
@@ -530,13 +586,13 @@ def run_h1_section(
               f"Calmar={stats['calmar']:.2f}  MaxDD={stats['max_dd']*100:.1f}%  "
               f"stops={n_stops_pct*100:.1f}%")
 
-    # Select: best Calmar, stops < 5%
+    # Select: robust plateau center (stops < 5% filter first)
     h1_sl_opt = None
     no_sl_calmar = next(s["calmar"] for s in sl_results if s["sl"] is None)
     eligible_sl = [s for s in sl_results if s["sl"] is not None and
                    s["n_stops"] / max(s["n_rebal"], 1) < 0.05]
     if eligible_sl:
-        best_sl = max(eligible_sl, key=lambda s: s["calmar"])
+        best_sl = _robust_select(eligible_sl, metric="calmar", param_key="sl")
         if best_sl["calmar"] > no_sl_calmar * 1.10:
             h1_sl_opt = best_sl["sl"]
     print(f"  → H1_SL_OPT = {h1_sl_opt}")
@@ -561,10 +617,12 @@ def run_h1_section(
 
     h1_exit_opt = None
     no_exit_sortino = next(s["sortino"] for s in exit_results if s["exit_thresh"] is None)
-    for s in exit_results:
-        if s["exit_thresh"] is not None and s["sortino"] > no_exit_sortino + 0.05:
-            h1_exit_opt = s["exit_thresh"]
-            break  # take lowest threshold that meets criterion
+    eligible_exit = [s for s in exit_results if s["exit_thresh"] is not None]
+    if eligible_exit:
+        best_exit = _robust_select(eligible_exit, metric="sortino",
+                                   param_key="exit_thresh", calmar_min=1.0)
+        if best_exit["sortino"] > no_exit_sortino + 0.05:
+            h1_exit_opt = best_exit["exit_thresh"]
     print(f"  → H1_EXIT_OPT = {h1_exit_opt}")
 
     # ── D: Regime z-threshold sweep ────────────────────────────────────────────
@@ -585,12 +643,12 @@ def run_h1_section(
         print(f"  Z={z:.2f}: ret={stats['total_return']*100:.1f}%  "
               f"Calmar={stats['calmar']:.2f}  MaxDD={stats['max_dd']*100:.1f}%")
 
-    # Select z-threshold: best Calmar (MaxDD relative improvement >= 10%)
+    # Select z-threshold: robust plateau center (MaxDD improvement ≥ 10% filter first)
     no_gate_maxdd = z_results[-1]["max_dd"]  # z=2.50 ~ near-no-gate
     eligible_z = [s for s in z_results if abs(s["max_dd"]) < abs(no_gate_maxdd) * 0.90]
     h1_z_opt = 1.50  # default
     if eligible_z:
-        best_z = max(eligible_z, key=lambda s: s["calmar"])
+        best_z = _robust_select(eligible_z, metric="calmar", param_key="z")
         h1_z_opt = best_z["z"]
     print(f"  → H1_Z_OPT = {h1_z_opt}")
 
@@ -610,7 +668,7 @@ def run_h1_section(
         topn_results.append(stats)
         print(f"  TOP_N={n}: Sortino={stats['sortino']:.2f}  Calmar={stats['calmar']:.2f}")
 
-    best_topn = _best_sortino(topn_results, calmar_min=1.0)
+    best_topn = _robust_select(topn_results, metric="sortino", param_key="top_n", calmar_min=1.0)
     h1_topn_opt = best_topn.get("top_n", TOP_N_DEFAULT)
     print(f"  → H1_TOPN_OPT = {h1_topn_opt}")
 
@@ -628,7 +686,8 @@ def run_h1_section(
         sizing_results.append(stats)
         print(f"  SIZING={sizing}: Sortino={stats['sortino']:.2f}  Calmar={stats['calmar']:.2f}")
 
-    best_sz = _best_sortino(sizing_results, calmar_min=1.0)
+    sz_eligible = [s for s in sizing_results if s.get("calmar", 0) >= 1.0] or sizing_results
+    best_sz = max(sz_eligible, key=lambda s: s.get("sortino", 0))
     h1_sizing_opt = best_sz.get("sizing", "ew")
     print(f"  → H1_SIZING_OPT = {h1_sizing_opt}")
 
@@ -703,10 +762,11 @@ def run_h2_section(
     def _make_beta_hist():
         return {p: [[], []] for p in active_pairs if p != btc_key}
 
-    def _h2c_sig(all_prices, active_pairs, ts, beta_hist=None):
+    def _h2c_sig(all_prices, active_pairs, ts, beta_hist=None, mat2_time_thresh=None):
         if beta_hist is None:
             return None
-        return _compute_h2c_signal(all_prices, active_pairs, ts, btc_key, beta_hist)
+        return _compute_h2c_signal(all_prices, active_pairs, ts, btc_key,
+                                   beta_hist, mat2_time_thresh)
 
     # ── Version A: H2C faithful + fee sweep ────────────────────────────────────
     print("\n[A] Version A — H2C fee sweep ...")
@@ -727,6 +787,29 @@ def run_h2_section(
     # Baseline: 0.05% fee
     baseline_h2 = va_h2[f"H2_A_fee{FEE_DEFAULT*100:.2f}"]
 
+    # ── Version B: HAZ2_BTC_VOL_Z sweep (H2-specific z-threshold) ─────────────
+    print("\n[B] HAZ2_BTC_VOL_Z sweep (H2 vol-gate z-threshold) ...")
+    h2_z_levels = [0.75, 1.00, 1.25, 1.50, 2.00, 9.99]  # 9.99 ≈ no gate
+    z_results_h2 = []
+    for z in h2_z_levels:
+        lbl = f"H2_Z_{z:.2f}"
+        bh  = _make_beta_hist()
+        _, stats = _run_overlay_engine(
+            all_prices, active_pairs, timestamps,
+            signal_fn=_h2c_sig, signal_kwargs={"beta_hist": bh},
+            fee=FEE_DEFAULT, z_thresh=z,
+            top_n=TOP_N_DEFAULT, label=lbl,
+        )
+        stats["z_thresh_h2"] = z
+        z_results_h2.append(stats)
+        print(f"  Z={z:.2f}: ret={stats['total_return']*100:.1f}%  "
+              f"Calmar={stats['calmar']:.2f}  MaxDD={stats['max_dd']*100:.1f}%")
+
+    h2_z_opt = _robust_select(
+        z_results_h2, metric="calmar", param_key="z_thresh_h2", calmar_min=0.5,
+    ).get("z_thresh_h2", 1.50)
+    print(f"  → H2_Z_OPT = {h2_z_opt}")
+
     # ── C: BTC-direction exit sweep ────────────────────────────────────────────
     print("\n[C] BTC-direction exit sweep ...")
     btc_rev_levels = [None, -0.005, -0.010, -0.015, -0.020, -0.030]
@@ -737,7 +820,7 @@ def run_h2_section(
         _, stats = _run_overlay_engine(
             all_prices, active_pairs, timestamps,
             signal_fn=_h2c_sig, signal_kwargs={"beta_hist": bh},
-            fee=FEE_DEFAULT, btc_rev_exit=rev, z_thresh=h1_z_opt,
+            fee=FEE_DEFAULT, btc_rev_exit=rev, z_thresh=h2_z_opt,
             top_n=TOP_N_DEFAULT, label=lbl,
         )
         stats["btc_rev"] = rev
@@ -747,10 +830,11 @@ def run_h2_section(
 
     no_rev_calmar = next(s["calmar"] for s in btc_rev_results if s["btc_rev"] is None)
     h2_btcrev_opt = None
-    eligible_rev = [s for s in btc_rev_results if s["btc_rev"] is not None and
-                    s["calmar"] > no_rev_calmar * 1.10]
-    if eligible_rev:
-        h2_btcrev_opt = max(eligible_rev, key=lambda s: s["calmar"])["btc_rev"]
+    non_none_rev = [s for s in btc_rev_results if s["btc_rev"] is not None]
+    if non_none_rev:
+        cand = _robust_select(non_none_rev, metric="calmar", param_key="btc_rev", calmar_min=0.5)
+        if cand["calmar"] > no_rev_calmar * 1.10:
+            h2_btcrev_opt = cand["btc_rev"]
     print(f"  → H2_BTCREV_OPT = {h2_btcrev_opt}")
 
     # ── Hold cap sweep ─────────────────────────────────────────────────────────
@@ -764,7 +848,7 @@ def run_h2_section(
             all_prices, active_pairs, timestamps,
             signal_fn=_h2c_sig, signal_kwargs={"beta_hist": bh},
             fee=FEE_DEFAULT, btc_rev_exit=h2_btcrev_opt,
-            hold_cap_hours=hc, z_thresh=h1_z_opt,
+            hold_cap_hours=hc, z_thresh=h2_z_opt,
             top_n=TOP_N_DEFAULT, label=lbl,
         )
         stats["hold_cap"] = hc
@@ -772,7 +856,8 @@ def run_h2_section(
         print(f"  HC={str(hc):5s}: Sortino={stats['sortino']:.2f}  "
               f"Calmar={stats['calmar']:.2f}")
 
-    best_hc = _best_sortino(holdcap_results, calmar_min=0.5)
+    best_hc = _robust_select(holdcap_results, metric="sortino",
+                             param_key="hold_cap", calmar_min=0.5)
     h2_holdcap_opt = best_hc.get("hold_cap", None)
     print(f"  → H2_HOLDCAP_OPT = {h2_holdcap_opt}")
 
@@ -788,28 +873,55 @@ def run_h2_section(
             signal_fn=_h2c_sig, signal_kwargs={"beta_hist": bh},
             fee=FEE_DEFAULT, btc_rev_exit=h2_btcrev_opt,
             hold_cap_hours=h2_holdcap_opt, btc_gate_pct=gate,
-            z_thresh=h1_z_opt, top_n=TOP_N_DEFAULT, label=lbl,
+            z_thresh=h2_z_opt, top_n=TOP_N_DEFAULT, label=lbl,
         )
         stats["btc_gate"] = gate
         gate_results.append(stats)
         print(f"  GATE={gate:.3f}: Sortino={stats['sortino']:.2f}  "
               f"Calmar={stats['calmar']:.2f}  MaxDD={stats['max_dd']*100:.1f}%")
 
-    best_gate = _best_sortino(gate_results, calmar_min=0.5)
+    best_gate = _robust_select(gate_results, metric="sortino",
+                               param_key="btc_gate", calmar_min=0.5)
     h2_gate_opt = best_gate.get("btc_gate", 0.005)
     print(f"  → H2_GATE_OPT = {h2_gate_opt}")
 
+    # ── Version F: MAT2_TIME_DECAY sweep ──────────────────────────────────────
+    print("\n[F] MAT2_TIME_DECAY sweep (diffusion window freshness gate) ...")
+    mat_levels = [0.30, 0.40, 0.50, 0.60, 0.75, None]  # None = no filter
+    mat_results = []
+    for mat in mat_levels:
+        lbl = f"H2_MAT_{mat}"
+        bh  = _make_beta_hist()
+        _, stats = _run_overlay_engine(
+            all_prices, active_pairs, timestamps,
+            signal_fn=_h2c_sig,
+            signal_kwargs={"beta_hist": bh, "mat2_time_thresh": mat},
+            fee=FEE_DEFAULT, btc_rev_exit=h2_btcrev_opt,
+            hold_cap_hours=h2_holdcap_opt, btc_gate_pct=h2_gate_opt,
+            z_thresh=h2_z_opt, top_n=TOP_N_DEFAULT, label=lbl,
+        )
+        stats["mat_thresh"] = mat
+        mat_results.append(stats)
+        print(f"  MAT={str(mat):5s}: Sortino={stats['sortino']:.2f}  "
+              f"Calmar={stats['calmar']:.2f}  MaxDD={stats['max_dd']*100:.1f}%")
+
+    h2_mat_opt = _robust_select(
+        mat_results, metric="sortino", param_key="mat_thresh", calmar_min=0.5,
+    ).get("mat_thresh", None)
+    print(f"  → H2_MAT_OPT = {h2_mat_opt}")
+
     # ── Portfolio construction ─────────────────────────────────────────────────
-    print("\n[F] H2 portfolio construction sweep ...")
+    print("\n[G] H2 portfolio construction sweep ...")
     h2_topn_opt = TOP_N_DEFAULT
     for n in [2, 3, 4, 5]:
         bh = _make_beta_hist()
         _, stats = _run_overlay_engine(
             all_prices, active_pairs, timestamps,
-            signal_fn=_h2c_sig, signal_kwargs={"beta_hist": bh},
+            signal_fn=_h2c_sig,
+            signal_kwargs={"beta_hist": bh, "mat2_time_thresh": h2_mat_opt},
             fee=FEE_DEFAULT, btc_rev_exit=h2_btcrev_opt,
             hold_cap_hours=h2_holdcap_opt, btc_gate_pct=h2_gate_opt,
-            z_thresh=h1_z_opt, top_n=n, label=f"H2_TOPN_{n}",
+            z_thresh=h2_z_opt, top_n=n, label=f"H2_TOPN_{n}",
         )
         stats["top_n"] = n
         print(f"  TOPN={n}: Sortino={stats['sortino']:.2f}  Calmar={stats['calmar']:.2f}")
@@ -818,14 +930,15 @@ def run_h2_section(
             h2_topn_opt = n  # take last that maintains performance
 
     # ── H2 final ───────────────────────────────────────────────────────────────
-    print("\n[G] H2 final (all selected layers) ...")
+    print("\n[H] H2 final (all selected layers: B+C+D+E+F) ...")
     bh = _make_beta_hist()
     nav_h2_final, stats_h2_final = _run_overlay_engine(
         all_prices, active_pairs, timestamps,
-        signal_fn=_h2c_sig, signal_kwargs={"beta_hist": bh},
+        signal_fn=_h2c_sig,
+        signal_kwargs={"beta_hist": bh, "mat2_time_thresh": h2_mat_opt},
         fee=FEE_DEFAULT, btc_rev_exit=h2_btcrev_opt,
         hold_cap_hours=h2_holdcap_opt, btc_gate_pct=h2_gate_opt,
-        z_thresh=h1_z_opt, top_n=h2_topn_opt, label="C_H2_final",
+        z_thresh=h2_z_opt, top_n=h2_topn_opt, label="C_H2_final",
     )
     print(f"  C_H2_final: ret={stats_h2_final['total_return']*100:.1f}%  "
           f"Sortino={stats_h2_final['sortino']:.2f}  "
@@ -833,9 +946,9 @@ def run_h2_section(
           f"MaxDD={stats_h2_final['max_dd']*100:.1f}%")
 
     _write_h2_report(
-        va_h2, btc_rev_results, holdcap_results, gate_results,
-        stats_h2_final,
-        h2_btcrev_opt, h2_holdcap_opt, h2_gate_opt, h2_topn_opt,
+        va_h2, z_results_h2, btc_rev_results, holdcap_results, gate_results,
+        mat_results, stats_h2_final,
+        h2_z_opt, h2_btcrev_opt, h2_holdcap_opt, h2_gate_opt, h2_mat_opt, h2_topn_opt,
     )
     _save_equity_charts(
         [(nav_h2_final, "H2C Final (all layers)")],
@@ -848,6 +961,8 @@ def run_h2_section(
         "btcrev_opt":   h2_btcrev_opt,
         "holdcap_opt":  h2_holdcap_opt,
         "gate_opt":     h2_gate_opt,
+        "z_opt":        h2_z_opt,
+        "mat_opt":      h2_mat_opt,
         "topn_opt":     h2_topn_opt,
         "make_beta_hist": _make_beta_hist,
         "signal_fn":    _h2c_sig,
@@ -870,7 +985,21 @@ def run_dual_section(
     print("="*60)
 
     def _dual_signal_fn(all_prices, active_pairs, ts, alpha=0.50, beta_hist=None):
-        """Blend H1 and H2C signals with regime-conditional alpha."""
+        """Regime-conditional signal blend for dual-engine trade aggregation.
+
+        Both engines operate on the same asset universe. Signals are blended HERE
+        at the signal level (not at the order level) before allocation. This produces
+        one target portfolio → one set of trades → one fee charge per rebalance.
+
+        Architecture:
+          blended_z_i = α × H2C_z_i + (1−α) × H1_z_i → re-normalize CS → one allocation
+          TREND_FLAT (|r_BTC,2h| < 0.5%): H1 only (H2 diffusion mechanism inactive)
+          TREND_ACTIVE: blend H1 + H2C at weight α
+
+        This is NOT two independent strategies merged at the order book — that pattern
+        would create opposing trades (H1 sell + H2 buy on same asset), double-count fees,
+        and produce incoherent position sizing. Signal-level blending prevents all three.
+        """
         h1_sig = _vt._compute_signal(all_prices, active_pairs, ts)
         if beta_hist is None or h1_sig is None:
             return h1_sig
@@ -919,7 +1048,10 @@ def run_dual_section(
               f"Sortino={stats['sortino']:.2f}  Calmar={stats['calmar']:.2f}")
 
     h1_calmar = h1_params["stats_final"]["calmar"]
-    best_alpha = _best_sortino(alpha_results, calmar_min=max(h1_calmar * 0.90, 0.5))
+    best_alpha = _robust_select(
+        alpha_results, metric="sortino", param_key="alpha",
+        calmar_min=max(h1_calmar * 0.90, 0.5),
+    )
     alpha_opt = best_alpha.get("alpha", 0.35)
     print(f"  → alpha_TREND_OPT = {alpha_opt}")
 
@@ -1191,8 +1323,9 @@ def _write_h1_report(
 
 
 def _write_h2_report(
-    va_h2, btc_rev_results, holdcap_results, gate_results,
-    final_stats, btcrev_opt, holdcap_opt, gate_opt, topn_opt,
+    va_h2, z_results_h2, btc_rev_results, holdcap_results, gate_results,
+    mat_results, final_stats,
+    z_opt, btcrev_opt, holdcap_opt, gate_opt, mat_opt, topn_opt,
 ) -> None:
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -1227,6 +1360,22 @@ def _write_h2_report(
         "",
         "## Risk Overlay Sweeps",
         "",
+        "### B: HAZ2_BTC_VOL_Z — H2-Specific Volatility Gate",
+        "",
+        "Block H2C entries when BTC realized vol z-score exceeds threshold.",
+        "H2 may need a different gate level than H1 (H2 is momentum; high vol can be opportunity).",
+        "",
+        "| Z Threshold | Total Return | Calmar | MaxDD |",
+        "|-------------|-------------|--------|-------|",
+    ]
+    for s in z_results_h2:
+        lines.append(
+            f"| {s['z_thresh_h2']:.2f} | {_fmt(s['total_return'], True)} | "
+            f"{_fmt(s['calmar'])} | {_fmt(s['max_dd'], True)} |"
+        )
+    lines.append(f"\n**Selected (robust plateau center): H2_Z_OPT = {z_opt}**\n")
+
+    lines += [
         "### C: BTC-Direction Exit",
         "",
         "Mechanism-appropriate exit: H2 relies on BTC continuing in the same direction.",
@@ -1268,9 +1417,27 @@ def _write_h2_report(
     lines.append(f"\n**Selected: H2_GATE_OPT = {gate_opt}**\n")
 
     lines += [
+        "### F: MAT2_TIME_DECAY — Diffusion Window Freshness Gate",
+        "",
+        "Only enter H2C positions when the BTC impulse is recent.",
+        "mat_thresh = (t − t_peak_BTC) / 6h; skip if ≥ threshold.",
+        "IC(fresh)=+0.040 vs IC(uncond)=+0.023 (+72% uplift at threshold=0.40).",
+        "",
+        "| Time Decay Threshold | Sortino | Calmar | MaxDD |",
+        "|---------------------|---------|--------|-------|",
+    ]
+    for s in mat_results:
+        thresh_str = f"{s['mat_thresh']:.2f}" if s['mat_thresh'] is not None else "None"
+        lines.append(
+            f"| {thresh_str} | {_fmt(s['sortino'])} | "
+            f"{_fmt(s['calmar'])} | {_fmt(s['max_dd'], True)} |"
+        )
+    lines.append(f"\n**Selected (robust plateau center): H2_MAT_OPT = {mat_opt}**\n")
+
+    lines += [
         "---",
         "",
-        "## H2C Final — All Selected Layers",
+        "## H2C Final — All Selected Layers (A + B + C + D + E + F)",
         "",
         f"| Metric | Value |",
         f"|--------|-------|",
@@ -1278,6 +1445,8 @@ def _write_h2_report(
         f"| Sortino | {_fmt(final_stats['sortino'])} |",
         f"| Calmar | {_fmt(final_stats['calmar'])} |",
         f"| Max Drawdown | {_fmt(final_stats['max_dd'], True)} |",
+        f"| H2_Z_OPT | {z_opt} |",
+        f"| H2_MAT_OPT | {mat_opt} |",
         "",
         f"*Charts: see `H2_transitional_drift/02_Candidates/Strategy/charts/backtest/`*",
     ]

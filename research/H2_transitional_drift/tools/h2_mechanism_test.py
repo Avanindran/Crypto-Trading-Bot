@@ -20,7 +20,7 @@ Additionally test the non-z-scored diffusion gap as a signal:
     → the BTC contribution adds information beyond the cross-sectional rank
 
 Run:
-  python -X utf8 research/h2_mechanism_test.py
+  python -X utf8 research/H2_transitional_drift/tools/h2_mechanism_test.py
 
 Outputs:
   research/05_h2_mechanism_test.md
@@ -34,8 +34,9 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
-os.makedirs(os.path.join(_here, "charts"), exist_ok=True)
+_root = os.path.join(_here, '..', '..')  # research/ root
+sys.path.insert(0, _root)
+os.makedirs(os.path.join(_root, "charts"), exist_ok=True)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -64,8 +65,8 @@ BTC_FLAT_THRESH     = 0.005   # |btc_r_2h| < 0.5%  → BTC flat
 BTC_MODERATE_THRESH = 0.015   # 0.5% ≤ |btc_r_2h| < 1.5% → moderate
 # Anything ≥ 1.5% → BTC large move
 
-OUTPUT_FILE  = os.path.join(_here, "H2_transitional_drift", "03_results", "02_mechanism_test.md")
-CHART_FILE   = os.path.join(_here, "charts", "05_h2_mechanism", "ic_btc_conditioned.png")
+OUTPUT_FILE  = os.path.join(_root, "H2_transitional_drift", "03_results", "02_mechanism_test.md")
+CHART_FILE   = os.path.join(_root, "charts", "05_h2_mechanism", "ic_btc_conditioned.png")
 
 MIN_BUCKET_N = 20  # Minimum per-timestamp count in bucket for t-stat to be meaningful
 

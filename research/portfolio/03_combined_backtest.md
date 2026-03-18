@@ -1,5 +1,5 @@
 # Dual-Engine Regime-Conditional Allocation
-**Generated:** 2026-03-17 14:49 UTC
+**Generated:** 2026-03-18 01:25 UTC
 
 ## Architecture
 
@@ -7,7 +7,7 @@
 |-------------|-----------|-----------|
 | TREND_ACTIVE | |r_BTC,2h| ≥ 0.5% | α×H2C + (1−α)×H1 (α=0.00) |
 | TREND_FLAT | |r_BTC,2h| < 0.5% | H1 only (α=0) |
-| HAZARD | BTC vol z > 0.75 | No new entries |
+| HAZARD | BTC vol z > 1.0 | No new entries |
 
 ---
 
@@ -15,14 +15,14 @@
 
 | α | Total Return | Sortino | Calmar | MaxDD |
 |---|-------------|---------|--------|-------|
-| 0.00 | 35.6% | 2.51 | 9.68 | -15.1% |
-| 0.10 | 26.2% | 1.91 | 6.31 | -15.8% |
-| 0.20 | 26.5% | 1.93 | 6.47 | -15.6% |
-| 0.35 | 19.6% | 1.45 | 3.16 | -22.1% |
-| 0.50 | 8.2% | 0.75 | 1.26 | -20.9% |
-| 0.65 | 4.7% | 0.51 | 0.71 | -20.3% |
-| 0.80 | 13.2% | 1.09 | 2.28 | -19.5% |
-| 1.00 | 14.6% | 1.21 | 2.71 | -18.4% |
+| 0.00 | 39.3% | 2.78 | 12.13 | -13.8% |
+| 0.10 | 25.4% | 1.93 | 6.66 | -14.4% |
+| 0.20 | 27.4% | 2.03 | 6.47 | -16.3% |
+| 0.35 | 23.6% | 1.80 | 4.68 | -18.7% |
+| 0.50 | 18.2% | 1.49 | 3.72 | -17.2% |
+| 0.65 | 8.1% | 0.78 | 1.59 | -16.3% |
+| 0.80 | 14.5% | 1.24 | 3.25 | -15.3% |
+| 1.00 | 15.6% | 1.34 | 3.51 | -15.4% |
 
 **Selected: α_TREND_OPT = 0.0**
 
@@ -32,9 +32,9 @@
 
 | Config | Total Return | Sortino | Calmar | MaxDD | Δ Sortino vs H1 |
 |--------|-------------|---------|--------|-------|----------------|
-| H1-only (C_H1_final) | 39.9% | 2.78 | 11.03 | -15.5% | — |
-| H2C-only (C_H2_final) | 34.2% | 1.34 | 2.96 | -47.0% | -1.44 |
-| C_combined (α=0.00) | 35.6% | 2.51 | 9.68 | -15.1% | -0.27 |
+| H1-only (C_H1_final) | 38.0% | 2.69 | 11.73 | -13.6% | — |
+| H2C-only (C_H2_final) | 74.0% | 1.99 | 20.25 | -20.6% | -0.70 |
+| C_combined (α=0.00) | 39.3% | 2.78 | 12.13 | -13.8% | 0.08 |
 
 ---
 
@@ -44,10 +44,10 @@ Parameters frozen from training-period sweep. No adjustment based on OOS results
 
 | Metric | Value |
 |--------|-------|
-| Total Return | 1.5% |
-| Sortino | 0.40 |
-| Calmar | 0.60 |
-| Max Drawdown | -15.6% |
+| Total Return | 5.6% |
+| Sortino | 0.96 |
+| Calmar | 2.65 |
+| Max Drawdown | -14.3% |
 
 ---
 
@@ -55,9 +55,9 @@ Parameters frozen from training-period sweep. No adjustment based on OOS results
 
 | Perturbation | Sortino | Calmar |
 |-------------|---------|--------|
-| −20% | 3.20 | 16.45 |
-| baseline | 2.51 | 9.68 |
-| +20% | 3.07 | 14.86 |
+| −20% | 2.12 | 7.26 |
+| baseline | 2.78 | 12.13 |
+| +20% | 3.19 | 15.31 |
 
 Robustness criterion: Calmar remains positive across all perturbations → PASS
 

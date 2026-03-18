@@ -10,7 +10,7 @@ Also validates:
   - Maturity filter: excluding assets in the top-quintile of 6h return rank improves IC
 
 Run standalone (no bot dependencies):
-  python research/ic_validation.py
+  python research/tools/ic_validation.py
 
 Output saved to: research/ic_results.md
 
@@ -42,7 +42,9 @@ SIGNAL_HOURS = 6             # Lookback for C1 signal (6h return)
 MATURITY_BLOCK_PCT_RANK = 0.80  # Top 80% pct rank = stale; block entry
 
 BINANCE_VISION_BASE = "https://data.binance.vision/data/spot/monthly/klines"
-OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "ic_results.md")
+_here = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.join(_here, '..')  # research/ root
+OUTPUT_FILE = os.path.join(_root, "ic_results.md")
 
 
 def fetch_roostoo_pairs() -> List[str]:
@@ -509,7 +511,7 @@ def run_validation() -> None:
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
 
-        charts_dir = os.path.join(os.path.dirname(__file__), "charts", "03_validation")
+        charts_dir = os.path.join(_root, "charts", "03_validation")
         os.makedirs(charts_dir, exist_ok=True)
 
         period_ics_all = stats_all.get("period_ics", [])

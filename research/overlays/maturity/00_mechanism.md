@@ -1,5 +1,11 @@
 # Maturity Overlay — M_t Remaining Drift Capacity
 
+> **Scope:** H1 Reversal engine only — C3 mean-reversion maturity layer.
+> This is NOT a cross-mechanism overlay. M_t measures how far along the mean-reversion
+> trade is for H1; it does not apply to H2's diffusion mechanism.
+> H2's C3 (diffusion exhaustion) lives at `H2_transitional_drift/01_Proxies/Maturity_C3/`.
+> The sole cross-mechanism overlay is `overlays/regime/` (λ_t hazard rate).
+
 **Archetype:** Entry Timing Filter (reduces entry into overextended positions)
 **Status:** PARTIALLY VALIDATED — pct_rank proxy REJECTED; composite retained with caveat
 **Last updated:** 2026-03-17

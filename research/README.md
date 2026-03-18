@@ -71,13 +71,18 @@ research/
 │   └── 05_limitations.md             H2-specific open problems
 │
 ├── overlays/
-│   ├── regime/                       λ_t hazard rate (live in bot)
-│   │   ├── 00_mechanism.md
+│   │
+│   │   NOTE: overlays/ contains only the single true cross-mechanism overlay (regime/λ_t).
+│   │   All engine-specific filters (C2 hazard, C3 maturity) live inside each engine folder.
+│   │   maturity/ here is H1's C3 layer (mean-reversion exhaustion) — NOT a cross-engine overlay.
+│   │
+│   ├── regime/                       λ_t hazard rate — SOLE cross-mechanism overlay
+│   │   ├── 00_mechanism.md           allocates between H1 and H2 based on BTC state
 │   │   ├── 01_proxy_universe.md      LSI/MPI/FEI component specs
 │   │   ├── 02_results.md             LSI threshold robustness
 │   │   └── 03_decision.md            APPROVED
-│   ├── maturity/                     M_t drift capacity (live in bot)
-│   │   ├── 00_mechanism.md
+│   ├── maturity/                     H1 C3 — M_t drift capacity (H1-specific, live in bot)
+│   │   ├── 00_mechanism.md           scope note: H1 reversal engine only
 │   │   ├── 01_proxy_universe.md      M_t component specs
 │   │   └── 03_decision.md            pct_rank REJECTED; composite PROVISIONAL
 │   └── portfolio_construction/
@@ -103,44 +108,54 @@ research/
 
 | Step | Script | Output | Purpose |
 |------|--------|--------|---------|
-| 3A | `research/signal_search.py` | `H1_reversal/02_Candidates/Signal/01_ic_results.md` + `05_ts_variant_search.md` | All proxy IC validation (CS + TS families + H2c/H2d) |
-| 4A/4B | `research/modifier_screen.py` | `H1_reversal/01_Proxies/Hazard_C2/*/02_modifier_screen.md` + C3 screens | Individual C2/C3 modifier screens |
-| 2B | `research/gp_search.py` | `H1_reversal/02_Candidates/Signal/04_combination_search.md` | GP linear weight search (expanded terminal set incl. TS) |
-| 3D | `research/h2_mechanism_test.py` | `H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md` | BTC-conditional IC uplift |
-| 3C-5 | `research/vector_tests.py` | `H1_reversal/02_Candidates/Strategy/01_vector_tests.md` | Bare → +C2 → +C3 improvement |
-| 6 | `research/portfolio_tests.py` | `overlays/portfolio_construction/01_sizing_schemes.md` | Sizing scheme comparison |
-| 7 | `research/regime_tests.py` | `overlays/portfolio_construction/02_regime_allocation.md` | Regime ladder comparison |
-| 12 | `research/robustness.py` | `H1_reversal/02_Candidates/Strategy/03_robustness.md` | Robustness checks |
-| 10 | `research/backtest_simulation.py` | `H1_reversal/02_Candidates/Strategy/02_backtest.md` | Full strategy simulation (maker fee 0.05%) |
+| 3A | `research/tools/signal_search.py` | `H1_reversal/02_Candidates/Signal/01_ic_results.md` + `05_ts_variant_search.md` + `H2_transitional_drift/02_Candidates/Signal/05_h2_variant_search.md` | All proxy IC validation (CS + TS families + H2c/H2d + H2E/H2F/H2G variants) |
+| 4A/4B (H1) | `research/tools/modifier_screen.py` | `H1_reversal/01_Proxies/Hazard_C2/*/02_modifier_screen.md` + C3 screens | H1 C2 hazard + C3 maturity modifier screens |
+| 4A/4B (H2) | `research/H2_transitional_drift/tools/h2_modifier_screen.py` | `H2_transitional_drift/01_Proxies/Hazard_C2/*/02_modifier_screen.md` + C3 screens | H2 C2 hazard + C3 diffusion-maturity modifier screens |
+| 2B | `research/tools/gp_search.py` | `H1_reversal/02_Candidates/Signal/04_combination_search.md` | GP linear weight search (expanded terminal set incl. TS) |
+| 3D | `research/H2_transitional_drift/tools/h2_mechanism_test.py` | `H2_transitional_drift/02_Candidates/Signal/02_mechanism_test.md` | BTC-conditional IC uplift |
+| 3C-5 | `research/tools/vector_tests.py` | `H1_reversal/02_Candidates/Strategy/01_vector_tests.md` | Bare → +C2 → +C3 improvement |
+| 6 | `research/tools/portfolio_tests.py` | `overlays/portfolio_construction/01_sizing_schemes.md` | Sizing scheme comparison |
+| 7 | `research/tools/regime_tests.py` | `overlays/portfolio_construction/02_regime_allocation.md` | Regime ladder comparison |
+| 12 (H1) | `research/tools/robustness.py` | `H1_reversal/02_Candidates/Strategy/03_robustness.md` | H1 engine robustness (block resample + weight perturbation) |
+| 12 (H2) | `research/tools/robustness.py` | `H2_transitional_drift/02_Candidates/Strategy/02_robustness.md` | H2C engine robustness (block resample + β_window/horizon perturbation) |
+| 10 | `research/backtest_simulation.py` | `H1_reversal/02_Candidates/Strategy/02_backtest.md` | Full strategy simulation (H1 + H2 C2/C3 sweeps + dual-engine) |
 
-## Script Dependencies
+## Script Layout
 
 ```
-ic_validation_extended.py   (data library — imported by all other scripts)
-    |
-    +-- signal_search.py         (C1 alpha: CS + TS family, H2c/H2d)
-    +-- modifier_screen.py       (C2 hazard + C3 maturity individual screens)   [NEW]
-    +-- gp_search.py             (GP combination search, expanded terminal set)
-    +-- h2_mechanism_test.py     (BTC-conditional IC uplift)
-    +-- vector_tests.py          (Bare → +C2 → +C3 backtest)
-    |     |
-    |     +-- portfolio_tests.py
-    |     +-- regime_tests.py
-    +-- backtest_simulation.py   (full strategy backtest, fee sensitivity)
-    +-- robustness.py            (block-resample + weight perturbation)
+research/
+├── ic_validation_extended.py   (data library — root, imported by all)
+├── backtest_simulation.py      (full strategy backtest — root)
+│
+├── tools/                      (shared research scripts)
+│   ├── signal_search.py
+│   ├── modifier_screen.py
+│   ├── gp_search.py
+│   ├── vector_tests.py
+│   ├── portfolio_tests.py
+│   ├── regime_tests.py
+│   ├── robustness.py
+│   ├── generate_charts.py
+│   └── ic_validation.py
+│
+└── H2_transitional_drift/tools/  (H2-specific scripts)
+    ├── h2_mechanism_test.py
+    └── h2_modifier_screen.py
 ```
 
-## Key Findings (2026-03-17)
+## Key Findings (2026-03-18)
 
 | Finding | Value | Source |
 |---------|-------|--------|
 | Promoted C1 formula | 0.70×CS_z(−C1_raw) + 0.30×CS_z(−vol_6h) | gp_search.py |
 | IC @ 4h | +0.057, t=12.7 | signal_search.py |
-| H2c beta-adjusted gap | IC=+0.042, t=+9.85 | signal_search.py NEW |
-| TS_BB_DIST | IC=+0.036, PROMOTE | signal_search.py NEW |
-| TS_ZSCORE_NEG_R2H | IC=+0.036, PROMOTE | signal_search.py NEW |
-| HAZ_FNG_EXTREME | MaxDD improv +17.6%, APPROVED | modifier_screen.py NEW |
-| MAT_VOL_RATIO | IC uplift +0.064, APPROVED | modifier_screen.py NEW |
+| H2c beta-adjusted gap | IC=+0.042, t=+9.85 | signal_search.py |
+| TS_BB_DIST | IC=+0.036, PROMOTE | signal_search.py |
+| TS_ZSCORE_NEG_R2H | IC=+0.036, PROMOTE | signal_search.py |
+| HAZ_FNG_EXTREME | MaxDD improv +17.6%, APPROVED | modifier_screen.py |
+| MAT_VOL_RATIO | IC uplift +0.064, APPROVED | modifier_screen.py |
+| H2C Final (all modifiers) | ret=+74.0%, Sortino=1.99, Calmar=20.25 | backtest_simulation.py (2026-03-18) |
+| alpha_TREND_OPT | 0.0 (H1 alone) | backtest_simulation.py dual-engine sweep |
 | Fee (corrected) | 0.05% maker (was 0.10% taker) | competition rules |
 
 ## Key Doctrine Files

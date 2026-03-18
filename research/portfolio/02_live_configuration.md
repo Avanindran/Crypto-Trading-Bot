@@ -15,7 +15,20 @@ C1_i = 0.70 × CS_z(−C1_raw_i) + 0.30 × CS_z(−realized_vol_6h_i)
 C1_raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h − median_r2h)
 ```
 
-H2C signal (`CS_z(β_i × r_BTC,2h − r_i,2h)`) has been validated (IC=+0.042 @ 1h, t=+9.85) and backtested standalone (Sortino 1.34, Calmar 2.96). Dual-engine allocation sweep found α_TREND_OPT=0.0 — H1 dominates in TREND_ACTIVE periods; H2C and H1 select overlapping laggard assets without additive diversification. **H2C is not deployed in Round 1.** Deploying H2C would require live β_i rolling OLS in `feature_builder.py` — planned for post-Round-1.
+H2C signal (`CS_z(β_i × r_BTC,2h − r_i,2h)`) has been validated (IC=+0.042 @ 1h, t=+9.85) and fully backtested with all modifiers (2026-03-18):
+
+| H2C parameter | Value | Sweep |
+|--------------|-------|-------|
+| HAZ2_BTC_VOL_Z gate (z_thresh) | 0.75 | Version B — no discriminatory power (all thresholds equivalent) |
+| BTC-direction exit | −1.0% | Version C — BTC-rev exit boosts Calmar from −0.40 → 4.65 |
+| Hold cap | 6h | Version D |
+| BTC magnitude gate | 0.3% | Version E — Calmar jumps to 14.81 |
+| MAT2_TIME_DECAY gate | None | Version F — time decay filter hurts full-strategy metrics; not applied |
+| TOP_N | 4 | Portfolio sweep |
+
+**H2C Final:** ret=+74.0%, Sortino=1.99, Calmar=20.25, MaxDD=−20.6%
+
+**Dual-engine allocation:** α_TREND_OPT=0.0 — H1 alone (Sortino=2.78, Calmar=12.13) beats any H1+H2 blend. H2C is a better standalone engine than a portfolio enhancement for H1. **H2C is not deployed in Round 1.** See [04_engine_integration.md](04_engine_integration.md) for bot architecture spec.
 
 ---
 

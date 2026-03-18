@@ -97,12 +97,43 @@ Score-proportional produces marginally higher IC-Sharpe (11.35 vs 10.48) in port
 
 ---
 
+## Trade Aggregation Principle
+
+**Critical constraint:** Both engines operate on the same asset universe. They must be combined at **signal level** — not at the order level.
+
+### Correct architecture: signal-level blending
+
+```
+blended_z_i = α × H2C_z_i + (1−α) × H1_z_i  →  re-normalize CS  →  one allocation
+```
+
+- One target portfolio per rebalance period
+- One set of trades per rebalance
+- One fee charge per position change
+- α is regime-conditional: `α = 0` in TREND_FLAT, `α = α_opt` in TREND_ACTIVE
+
+### Incorrect architecture: independent order books
+
+```
+H1 places orders → H2 places independent orders → merge order books  ← WRONG
+```
+
+This pattern creates:
+1. **Opposing trades**: H1 sells asset X, H2 buys asset X → net zero position, two fee charges
+2. **Double-counted fees**: each engine pays full fees independently, 2× turnover cost
+3. **Incoherent sizing**: two separate allocation algorithms → total gross exposure exceeds regime cap
+
+The `_dual_signal_fn()` in `backtest_simulation.py` implements signal-level blending correctly. The live bot must replicate this pattern in `signals.py`, not create a second allocation loop.
+
+---
+
 ## Navigation
 
 | File | Content |
 |------|---------|
 | [01_signal_aggregation.md](01_signal_aggregation.md) | H1 + H2 dual-engine aggregation |
 | [02_live_configuration.md](02_live_configuration.md) | Current live state |
+| [04_engine_integration.md](04_engine_integration.md) | Bot integration spec for H2 (architecture + state management) |
 | [../overlays/portfolio_construction/01_sizing_schemes.md](../overlays/portfolio_construction/01_sizing_schemes.md) | Portfolio sizing test results |
 | [../overlays/portfolio_construction/02_regime_allocation.md](../overlays/portfolio_construction/02_regime_allocation.md) | Regime allocation ladder |
 | [../H1_reversal/00_mechanism.md](../H1_reversal/00_mechanism.md) | H1 signal mechanism |

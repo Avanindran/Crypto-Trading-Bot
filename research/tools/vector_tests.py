@@ -17,7 +17,7 @@ Part D (Step 5) — Full signal vector: sequential improvement table
   Bare C1 → +C2 → +C2+C3
 
 Run:
-  python -X utf8 research/vector_tests.py
+  python -X utf8 research/tools/vector_tests.py
 
 Outputs:
   research/06_vector_tests.md
@@ -33,7 +33,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -52,7 +53,7 @@ from ic_validation_extended import (  # noqa: E402
     TRENDING_END,
 )
 
-os.makedirs(os.path.join(_here, "charts"), exist_ok=True)
+os.makedirs(os.path.join(_root, "charts"), exist_ok=True)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -641,7 +642,7 @@ def write_chart(
         ax.legend(loc="upper left")
         ax.grid(True, alpha=0.3)
 
-        out = os.path.join(_here, "H1_reversal", "02_Candidates", "Strategy", "charts", "vector_tests", "equity_curves.png")
+        out = os.path.join(_root, "H1_reversal", "02_Candidates", "Strategy", "charts", "vector_tests", "equity_curves.png")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         fig.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -720,7 +721,7 @@ def main() -> None:
         mat_result,
         nav_bare, nav_c2, nav_c2c3,
     )
-    out_md = os.path.join(_here, "H1_reversal", "02_Candidates", "Strategy", "01_vector_tests.md")
+    out_md = os.path.join(_root, "H1_reversal", "02_Candidates", "Strategy", "01_vector_tests.md")
     os.makedirs(os.path.dirname(out_md), exist_ok=True)
     with open(out_md, "w", encoding="utf-8") as f:
         f.write(report)

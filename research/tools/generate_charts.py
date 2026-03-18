@@ -9,7 +9,7 @@ Uses the same simulation as backtest_simulation.py.
 Requires: matplotlib (pip install matplotlib)
 
 Run:
-  python research/generate_charts.py
+  python research/tools/generate_charts.py
 """
 import math
 import os
@@ -20,7 +20,8 @@ from typing import Dict, List, Optional, Tuple
 # ── Import helpers from backtest_simulation ────────────────────────────────────
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _HERE)
+_ROOT = os.path.join(_HERE, '..')  # research/ root
+sys.path.insert(0, _ROOT)
 
 from backtest_simulation import (
     FALLBACK_PAIRS, BACKTEST_START_YEAR, BACKTEST_START_MONTH,
@@ -33,7 +34,7 @@ from backtest_simulation import (
     z_score_current, pct_rank, cross_sectional_z, classify_regime,
 )
 
-CHARTS_DIR = os.path.join(_HERE, "charts")
+CHARTS_DIR = os.path.join(_ROOT, "charts")
 
 
 # ── Simulation with time-series collection ────────────────────────────────────

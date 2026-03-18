@@ -1,5 +1,5 @@
 # H1 Reversal — Mechanism-Specific Backtest
-**Generated:** 2026-03-17 14:48 UTC
+**Generated:** 2026-03-18 01:25 UTC
 
 ## Parameter Disclosure
 
@@ -12,8 +12,8 @@ OOS window (Dec 2024–Jan 2025) evaluated **after** parameter selection, never 
 | Hold cadence | 4h | vector_tests.py (promoted object) |
 | TOP_N | 3 | Portfolio sweep |
 | Sizing | kelly | Portfolio sweep |
-| C2 z-threshold | 0.75 | Regime sweep |
-| Stop-loss | -0.04 | Risk overlay sweep |
+| C2 z-threshold | 1.0 | Regime sweep |
+| Stop-loss | -0.03 | Risk overlay sweep |
 | C1 exit threshold | 0.25 | Signal exit sweep |
 | Fee/trade | 0.05% maker | Competition rules |
 
@@ -47,19 +47,19 @@ OOS window (Dec 2024–Jan 2025) evaluated **after** parameter selection, never 
 | -0.08 | 21.8% | 1.57 | -50.6% | 0.7% |
 | None | -11.9% | -0.55 | -56.9% | 0.0% |
 
-**Selected: H1_SL_OPT = -0.04**
+**Selected: H1_SL_OPT = -0.03**
 
 ### C: C1 Signal Exit
 
 | Exit Threshold | Total Return | Sortino | Calmar |
 |---------------|-------------|---------|--------|
-| None | 36.4% | 1.41 | 4.77 |
-| 0.05 | 18.5% | 0.96 | 1.58 |
-| 0.1 | 23.7% | 1.12 | 2.26 |
-| 0.15 | 26.5% | 1.19 | 2.71 |
-| 0.2 | 31.3% | 1.32 | 3.25 |
-| 0.25 | 53.4% | 1.86 | 7.05 |
-| 0.3 | 24.4% | 1.15 | 2.39 |
+| None | 30.6% | 1.33 | 4.14 |
+| 0.05 | 7.9% | 0.65 | 0.57 |
+| 0.1 | 24.6% | 1.15 | 2.29 |
+| 0.15 | 35.3% | 1.44 | 3.70 |
+| 0.2 | 34.2% | 1.41 | 3.54 |
+| 0.25 | 50.7% | 1.80 | 6.57 |
+| 0.3 | 28.4% | 1.25 | 2.86 |
 
 **Selected: H1_EXIT_OPT = 0.25**
 
@@ -67,15 +67,15 @@ OOS window (Dec 2024–Jan 2025) evaluated **after** parameter selection, never 
 
 | Z-Threshold | Total Return | Calmar | MaxDD |
 |-------------|-------------|--------|-------|
-| 0.75 | 80.6% | 14.52 | -32.9% |
-| 1.0 | 78.8% | 13.95 | -33.0% |
-| 1.25 | 69.2% | 11.07 | -33.9% |
-| 1.5 | 53.4% | 7.05 | -36.2% |
-| 1.75 | 39.1% | 4.15 | -40.0% |
-| 2.0 | 19.8% | 1.57 | -45.0% |
-| 2.5 | 42.7% | 4.83 | -38.7% |
+| 0.75 | 76.1% | 13.05 | -33.4% |
+| 1.0 | 69.2% | 11.39 | -33.0% |
+| 1.25 | 62.8% | 9.57 | -33.9% |
+| 1.5 | 50.7% | 6.57 | -36.2% |
+| 1.75 | 43.6% | 4.66 | -41.2% |
+| 2.0 | 24.6% | 1.95 | -47.0% |
+| 2.5 | 39.5% | 4.35 | -38.7% |
 
-**Selected: H1_Z_OPT = 0.75**
+**Selected: H1_Z_OPT = 1.0**
 
 ---
 
@@ -83,20 +83,20 @@ OOS window (Dec 2024–Jan 2025) evaluated **after** parameter selection, never 
 
 | Metric | Value |
 |--------|-------|
-| Total Return | 39.9% |
-| Annualized Return | 170.5% |
-| Sortino | 2.78 |
-| Calmar | 11.03 |
-| Max Drawdown | -15.5% |
+| Total Return | 38.0% |
+| Annualized Return | 160.1% |
+| Sortino | 2.69 |
+| Calmar | 11.73 |
+| Max Drawdown | -13.6% |
 
 ## OOS Holdout (Dec 2024 – Jan 2025)
 
 | Metric | Value |
 |--------|-------|
-| Total Return | 2.5% |
-| Sortino | 0.53 |
-| Calmar | 0.97 |
-| Max Drawdown | -15.9% |
+| Total Return | 6.9% |
+| Sortino | 1.13 |
+| Calmar | 3.43 |
+| Max Drawdown | -14.1% |
 
 ---
 

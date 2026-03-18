@@ -17,7 +17,7 @@ Primary metric: Sortino (competition weight 0.4).
 Secondary: Sharpe, Calmar, MaxDD.
 
 Run:
-    python -X utf8 research/portfolio_tests.py
+    python -X utf8 research/tools/portfolio_tests.py
 
 Output:
     research/11_portfolio_construction.md
@@ -32,7 +32,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+_root = os.path.join(_here, '..')  # research/ root
+sys.path.insert(0, _root)
 
 from ic_validation_extended import (  # noqa: E402
     load_klines_all_parallel,
@@ -67,7 +68,7 @@ MIN_WT        = 0.05                # 5% NAV floor per position
 MAX_WT        = 0.30                # 30% NAV cap per position
 DOWNVOL_LOOK  = 48                  # hours of history for downside vol estimate
 
-OUTPUT_FILE = os.path.join(_here, "overlays", "portfolio_construction", "01_sizing_schemes.md")
+OUTPUT_FILE = os.path.join(_root, "overlays", "portfolio_construction", "01_sizing_schemes.md")
 
 
 # ---------------------------------------------------------------------------
