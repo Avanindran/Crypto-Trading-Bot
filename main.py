@@ -229,9 +229,20 @@ def run() -> None:
             asset_features, cs = build_all_features(cache, tradable_pairs, funding_rates)
 
             # ── h. Compute regime → λ_t ────────────────────────────────────────
+            # Dominance cascade (LSI overrides all — collapses to near-zero in stress):
+            #   LSI > 0.80 → HAZARD_DEFENSIVE λ=10.0 (exp(−10)≈0 — emergency shutdown)
+            #   LSI > 0.60 → HAZARD_DEFENSIVE λ=4.0  (exp(−4)≈0.018 — effectively zero)
+            #   LSI > 0.40 OR MPI < 0.30 → NEUTRAL_MIXED λ=1.5  (caution / chop)
+            #   FEI > 0.55 AND MPI > 0.50 → TREND_SUPPORTIVE λ=0.3
+            #   else → NEUTRAL_MIXED λ=0.8
+            # Full specification: docs/STRATEGY.md — "λ_t — Market Hazard Rate"
             regime, lambda_t = regime_engine.compute(asset_features, cs, fng_value=fng_value)
 
             # ── i. Kill switch: emergency exit checks ─────────────────────────
+            # Three independent emergency layers (any can trigger alone):
+            #   1. Portfolio drawdown −12% → exit all, block until recovery to −8%
+            #   2. BTC 2h return < −6% → exit all;  < −3% → block new entries
+            #   3. Regime HAZARD_DEFENSIVE → block all new entries
             block_entries = False
 
             # Kill switch 1: Portfolio drawdown

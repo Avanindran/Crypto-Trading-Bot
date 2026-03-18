@@ -33,10 +33,15 @@ WARMUP_MIN_SAMPLES: int = 30        # Phase 0→1 gate (~30 min at 1-min polling
 WARMUP_PARTIAL_SAMPLES: int = 120   # Phase 1→2 gate: r_2h available (~2h)
 WARMUP_FULL_SAMPLES: int = 360      # Phase 2→3 gate: r_6h available (~6h)
 
-# Restricted mode overrides (Phase 1 and Phase 2 use tighter parameters)
+# Warmup phase overrides (tighter parameters during thin-signal phases):
+# Phase 1 (< 120 snapshots, r_6h missing): primary C1 horizon (0.35 weight) unavailable.
+#   Raise threshold 1.00→1.50 (top ~7% only), cap at 2 positions and 30% gross.
+# Phase 2 (120–360 snapshots, r_6h still missing but r_2h confirmed):
+#   Moderate threshold 1.20, allow 3 positions and 50% gross.
+# Phase 3 (≥ 360 snapshots): all windows available — use full regime params.
 WARMUP_PHASE1_MAX_POSITIONS: int = 2
 WARMUP_PHASE1_GROSS_CAP: float = 0.30
-WARMUP_PHASE1_C1_THRESHOLD: float = 1.50  # Higher bar during thin-signal phase
+WARMUP_PHASE1_C1_THRESHOLD: float = 1.50  # Only top ~7% of assets qualify during r_6h blackout
 
 WARMUP_PHASE2_MAX_POSITIONS: int = 3
 WARMUP_PHASE2_GROSS_CAP: float = 0.50
@@ -176,21 +181,28 @@ REENTRY_LOCKOUT_SECONDS: int = 2 * 3600 # 2-hour re-entry lockout after exit
 BTC_BLOCK_NEW_ENTRIES_RETURN: float = -0.03     # BTC 2h return < -3%: block all new longs
 BTC_EMERGENCY_EXIT_RETURN: float = -0.06         # BTC 2h return < -6%: emergency exit all
 
-# ── H2C BTC-Diffusion Engine (standalone, portfolio-level) ───────────────────
-# Validated standalone: ret=+74.0%, Sortino=1.99, Calmar=20.25 (backtest 2026-03-18)
-# Portfolio aggregation research [G]: ALL PASS — Sortino=3.30, Calmar=19.22, OOS Sortino=1.40
-# Continuous allocation formula:
+# ── H2C BTC-Diffusion Engine ─────────────────────────────────────────────────
+# Economic mechanism: BTC reprices first on macro info; altcoins lag (rational inattention).
+# H2C signal: CS_z(β_i·r_BTC,2h − r_i,2h) — assets that haven't tracked BTC's move.
+# Promoted: IC=+0.042 (t=9.85) @ 1h horizon (research/H2_transitional_drift/04_decision.md).
+#
+# Standalone backtest: Sortino=1.99, Calmar=20.25, MaxDD=−20.6%
+#   (research/H2_transitional_drift/02_Candidates/Strategy/01_backtest.md)
+# Portfolio aggregation [G]: f_max=0.50 → Sortino=3.30, Calmar=19.22, OOS Sortino=1.40 — ALL GATES PASSED
+#   (research/portfolio/05_dual_portfolio_backtest.md)
+#
+# Continuous allocation formula (failure-mode derived — NOT swept):
 #   f_t = H2C_MAX_FRACTION × min(1, |r_BTC,2h| / H2C_BTC_SCALE) × max(0, 1 − vol_z / H2C_Z_SCALE)
-# Fixed parameters anchored to failure modes (not swept):
-#   H2C_BTC_SCALE: validated from H2C gate sweep (Section B minimum meaningful BTC move)
-#   H2C_Z_SCALE:   2σ above rolling median = correlations spike, H2C signal degrades
+#   btc_activity: 0 when BTC flat → H2C signal undefined; ramps to 1 at H2C_BTC_SCALE move
+#   stress_decay: 1 when calm; decays to 0 at vol_z = H2C_Z_SCALE (correlations spike)
 H2C_MAX_FRACTION: float = 0.50  # Swept in [G-1]; plateau center f_max_opt
 H2C_BTC_SCALE:    float = 0.003 # |r_BTC,2h| ramp threshold (btc_activity linear ramp)
 H2C_Z_SCALE:      float = 2.0   # vol_z at which stress_decay reaches 0
 H2C_BETA_WINDOW:       int   = 48    # Rolling OLS window (hours)
 H2C_BETA_MIN_OBS:      int   = 24    # Min observations before beta is usable
-H2C_MAX_HOLD_HOURS: float = 6.0   # Force exit H2C positions after 6h (sweep D optimal: HC=6 → Calmar=6.99)
-H2C_BTC_REV_EXIT:   float = -0.01 # Exit H2C if BTC 2h return < -1% since entry (sweep C optimal: Sortino=1.64)
+# H2C exit rules — validated in backtest sweeps:
+H2C_MAX_HOLD_HOURS: float = 6.0   # Sweep D: HC=6 → Calmar=6.99 vs HC=None → Calmar=4.65 vs HC=12 → Calmar=0.29
+H2C_BTC_REV_EXIT:   float = -0.01 # Sweep C: BTCREV=-0.01 → Sortino=1.64 vs None → Sortino=0.29
 
 # ──────────────────────────────────────────────────────────
 # Execution
