@@ -1,5 +1,5 @@
 # H1 Reversal — Mechanism-Specific Backtest
-**Generated:** 2026-03-18 01:25 UTC
+**Generated:** 2026-03-18 08:53 UTC
 
 ## Parameter Disclosure
 
@@ -97,6 +97,20 @@ OOS window (Dec 2024–Jan 2025) evaluated **after** parameter selection, never 
 | Sortino | 1.13 |
 | Calmar | 3.43 |
 | Max Drawdown | -14.1% |
+
+---
+
+## Cost Scenario Analysis
+
+Strategy must remain Sortino > 0 and Calmar > 0 across all realistic fee scenarios.
+
+| Scenario | Entry Fee | Exit Fee | Sortino | Calmar | MaxDD |
+|----------|-----------|----------|---------|--------|-------|
+| maker/maker | 0.05% | 0.05% | 2.69 | 11.73 | -13.6% |
+| maker/taker | 0.05% | 0.10% | 2.28 | 8.71 | -14.1% |
+| taker/taker | 0.10% | 0.10% | 1.88 | 6.25 | -14.6% |
+
+Gate: Calmar > 0 in maker/taker scenario → **PASS**
 
 ---
 

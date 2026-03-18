@@ -1,5 +1,5 @@
 # Dual-Engine Regime-Conditional Allocation
-**Generated:** 2026-03-18 01:25 UTC
+**Generated:** 2026-03-18 08:53 UTC
 
 ## Architecture
 
@@ -60,5 +60,19 @@ Parameters frozen from training-period sweep. No adjustment based on OOS results
 | +20% | 3.19 | 15.31 |
 
 Robustness criterion: Calmar remains positive across all perturbations → PASS
+
+---
+
+## Cost Scenario Analysis
+
+| Scenario | Entry Fee | Exit Fee | Sortino | Calmar | MaxDD |
+|----------|-----------|----------|---------|--------|-------|
+| maker/maker | 0.05% | 0.05% | 2.78 | 12.13 | -13.8% |
+| maker/taker | 0.05% | 0.10% | 2.36 | 9.09 | -14.3% |
+| taker/taker | 0.10% | 0.10% | 1.97 | 6.61 | -14.7% |
+
+Gate: Calmar > 0 in maker/taker scenario → **PASS**
+
+---
 
 *Charts: see `portfolio/charts/combined/`*

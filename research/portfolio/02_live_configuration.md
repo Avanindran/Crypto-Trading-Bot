@@ -28,7 +28,13 @@ H2C signal (`CS_z(β_i × r_BTC,2h − r_i,2h)`) has been validated (IC=+0.042 @
 
 **H2C Final:** ret=+74.0%, Sortino=1.99, Calmar=20.25, MaxDD=−20.6%
 
-**Dual-engine allocation:** α_TREND_OPT=0.0 — H1 alone (Sortino=2.78, Calmar=12.13) beats any H1+H2 blend. H2C is a better standalone engine than a portfolio enhancement for H1. **H2C is not deployed in Round 1.** See [04_engine_integration.md](04_engine_integration.md) for bot architecture spec.
+**Dual-engine allocation (continuous):** Discrete sweep showed α_TREND_OPT=0.0. Switched to continuous regime-adaptive allocation (Section [G], `research/portfolio/05_dual_portfolio_backtest.md`):
+
+```
+f_t = f_max × min(1, |r_BTC,2h| / 0.003) × max(0, 1 − vol_z / 2.0)
+```
+
+f_max=0.50 → **H1+H2C combined: Sortino=3.30, Calmar=19.22, MaxDD=−13.7%, OOS Sortino=1.40** — ALL GATES PASSED. **H2C is deployed in Round 1.** See [04_engine_integration.md](04_engine_integration.md) for bot architecture spec.
 
 ---
 
@@ -38,7 +44,7 @@ H2C signal (`CS_z(β_i × r_BTC,2h − r_i,2h)`) has been validated (IC=+0.042 @
 |-----------|-------|--------|
 | H1 reversal weight | 0.70 | GP search on train (Oct–Nov 2024) |
 | H5 stability weight | 0.30 | GP search on train |
-| H2 Transitional Drift | Not deployed | Proxy failed; mechanism confirmed |
+| H2C BTC-Diffusion | Deployed (f_max=0.50) | IC=+0.042 @ 1h; continuous regime allocation |
 
 **config.py parameters:**
 ```python
@@ -109,13 +115,30 @@ In a trending bull run (competition period), TREND_SUPPORTIVE is expected to dom
 
 ---
 
-## Research-Validated Parameter Changes (2026-03-17)
+## Research-Validated Parameter Changes
 
 From mechanism-specific backtest sweeps:
 
 | Config parameter | Old value | New value | Evidence |
 |-----------------|-----------|-----------|---------|
-| `STOP_LOSS_PCT` | −4% | **−4%** (confirmed) | H1 SL sweep: −4% best Calmar, stops <5%/period |
+| `STOP_LOSS_PCT` | −4% | **−3%** | H1 SL sweep robust plateau center (2026-03-18); −3% is median of ≥85%-of-peak plateau; −4% sits at plateau edge |
 | `EXIT_C1_THRESHOLD` | 0.20 | **0.25** | H1 exit sweep: Sortino 1.86 vs 1.32 at 0.20 |
 
 See `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` for full sweep tables.
+
+---
+
+## Cost Robustness (2026-03-18)
+
+Asymmetric fee testing (entry=maker 0.05%, exit=taker 0.10% for stops/emergency exits):
+
+| Engine | Scenario | Sortino | Calmar | MaxDD |
+|--------|----------|---------|--------|-------|
+| H1 | maker/maker | 2.69 | 11.73 | −13.6% |
+| H1 | **maker/taker** | **2.28** | **8.71** | −14.1% |
+| H1 | taker/taker | 1.88 | 6.25 | −14.6% |
+| Combined | maker/maker | 2.78 | 12.13 | −13.8% |
+| Combined | **maker/taker** | **2.36** | **9.09** | −14.3% |
+| Combined | taker/taker | 1.97 | 6.61 | −14.7% |
+
+Gate: Calmar > 0 in maker/taker → **PASS** for all engines.
