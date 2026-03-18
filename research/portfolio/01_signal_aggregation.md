@@ -1,7 +1,7 @@
 # Portfolio — H1 + H2 Signal Aggregation Framework
 
 **Written:** 2026-03-17
-**Status:** H1 live; H2 proxy pending — dual-engine framework documented for implementation
+**Status:** H1 live; H2c deployed via continuous allocation (engine_aggregator.py)
 
 ---
 
@@ -23,13 +23,15 @@ In a BTC uptrend where some altcoins lag, BOTH mechanisms can fire simultaneousl
 
 ---
 
-## Current State — H1 Only
+## Current State — H1 + H2C (Continuous Allocation)
 
 ```python
-C1_i = H1_score_i    # = 0.70×CS_z(-C1_raw) + 0.30×CS_z(-rvol)
+# engine_aggregator.py
+w_h2c = f_t  # = f_max × btc_activity × stress_decay
+C1_i = (1 - w_h2c) * H1_score_i + w_h2c * H2C_score_i
 ```
 
-The IC uplift from H2 mechanism conditioning is implicitly captured through the regime overlay (BTC vol z-score in LSI, MPI in regime cascade), but the direct Δᵢ signal is not computed.
+The continuous allocation formula allocates to H2C dynamically — zero when BTC is flat (btc_activity=0) or market is stressed (stress_decay=0), up to f_max=0.50 when both conditions are favorable. Mean active H2C fraction ≈ 36.8%.
 
 ---
 
@@ -94,11 +96,13 @@ The overlap is a feature, not a bug: in TREND conditions, an asset that is laggi
 | Component | Status | Required before deployment |
 |-----------|--------|--------------------------|
 | H1_score_i | Live | — |
-| H2_score_i (Δᵢ proxy) | Pending | Non-collapsed proxy + IC validation |
-| α_TREND, α_NEUTRAL weights | Provisional | IC test of dual-engine vs H1-only |
-| Alt-season regime detector | Not implemented | Correlation collapse detection |
+| H2_score_i (Δᵢ proxy) | **Deployed** | H2c (beta-adjusted gap) — IC=+0.042 @ 1h (t=+9.85) |
+| f_t allocation weight | **Deployed** | Continuous: f_max × btc_activity × stress_decay |
+| Alt-season regime detector | Addressed | stress_decay=0 when vol_z ≥ 2σ (correlation regime shift) |
 
-**Timeline:** H2 implementation is out of scope for Round 1 (deadline Mar 28). Documented here for post-competition implementation.
+**Timeline:** H2c deployed in Round 1. Combined result: Sortino=3.30, Calmar=19.22, OOS Sortino=1.40 (Section [G]). See `research/portfolio/05_dual_portfolio_backtest.md`.
+
+**Note:** The discrete regime-conditional blend (α_TREND=0.65) described in "Target State" above was evaluated but superseded by the continuous allocation approach, which does not require discrete regime classification for H2C weighting.
 
 ---
 

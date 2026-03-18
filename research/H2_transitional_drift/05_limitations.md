@@ -1,7 +1,7 @@
 # H2 — Limitations and Open Problems
 
 **Date:** 2026-03-17
-**Status:** Mechanism confirmed; proxy pending. No live deployment.
+**Status:** H2c (beta-adjusted gap) PROMOTED and DEPLOYED. Limitations below remain valid for the deployed proxy.
 
 ---
 
@@ -55,22 +55,20 @@ If BTC overshoots and corrects within the holding period, Δᵢ becomes misdirec
 
 ## Implications for Portfolio Architecture
 
-Until a non-collapsed H2 proxy is implemented and validated:
+H2c (`CS_z(β_i · r_BTC,2h − r_i,2h)`) is DEPLOYED via continuous allocation. How the known limitations are addressed in the live implementation:
 
-1. The live bot runs H1 only
-2. H2 mechanism conditioning is implicit through the regime overlay (BTC vol z-score in LSI)
-3. The Δᵢ-based scoring is not used in position scoring
+1. **Beta instability** — mitigated by 48h rolling OLS window (H2C_BETA_WINDOW=48) and H2C_BETA_MIN_OBS=24 minimum observations before beta is used
+2. **Alt-season risk** — mitigated by stress_decay factor: `max(0, 1 − vol_z / 2.0)` — when correlation spikes (vol_z ≥ 2σ), H2C capital fraction decays to 0
+3. **BTC reversal risk** — mitigated by BTC reversal exit rule: exit H2C position if BTC 2h return drops below −1% (H2C_BTC_REV_EXIT=−0.01)
 
 See [../portfolio/02_live_configuration.md](../portfolio/02_live_configuration.md) for current live state.
 
 ---
 
-## Research Priority
+## Research Priority — Resolved
 
-H2 implementation requires two validated components before deployment:
-1. A proxy that preserves Δᵢ structure without cross-sectional collapse (technical problem)
-2. An alt-season/correlation regime detector (admissibility filter)
+Both deployment prerequisites were resolved before Round 1:
+1. **Non-collapsed proxy** — H2c (beta-adjusted gap `CS_z(β_i · r_BTC,2h − r_i,2h)`) satisfies this: β_i varies per asset, surviving CS normalization. IC=+0.042 @ 1h (t=+9.85). See `02_Candidates/Strategy/01_backtest.md`.
+2. **Admissibility filter** — stress_decay and btc_activity factors in the continuous allocation formula act as the regime detector: H2C capital fraction scales to 0 when market is stressed or BTC is flat.
 
-Neither component requires changes to the current live bot architecture. H2 can be added as an additional score component without modifying H1's regime gating or portfolio construction.
-
-**Estimated work:** ~40h of research and testing. Out of scope for Round 1 deadline (Mar 28).
+**Deployed:** H2c live in `bot/strategy/h2_signals.py` + `bot/strategy/engine_aggregator.py`. Portfolio result: Sortino=3.30, Calmar=19.22, OOS Sortino=1.40 (Section [G]).
