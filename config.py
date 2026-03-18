@@ -133,6 +133,12 @@ REGIME_PARAMS: Dict[str, dict] = {
     },
 }
 
+# Sub-state lambda values for the 5-branch dominance cascade.
+# TREND_SUPPORTIVE λ=0.30 and NEUTRAL_MIXED (else) λ=0.80 live in REGIME_PARAMS above.
+# HAZARD_DEFENSIVE (normal) λ=4.00 also lives in REGIME_PARAMS above.
+LAMBDA_HAZARD_EMERGENCY: float = 10.0  # LSI > 0.80 — near-zero suppression (emergency)
+LAMBDA_NEUTRAL_CAUTION:  float = 1.5   # LSI > 0.40 or MPI < 0.30 — caution sub-state
+
 # ──────────────────────────────────────────────────────────
 # Entry / Exit Filters
 # ──────────────────────────────────────────────────────────
@@ -140,9 +146,8 @@ MAX_MATURITY_FOR_ENTRY: float = 0.72    # Entry blocked if M_t > 0.72 (slightly 
 EXIT_C1_THRESHOLD: float = 0.25         # Exit if C1 z-score falls below 0.25 (research: 0.25 > 0.20, Sortino 1.86 vs 1.32)
 
 # ──────────────────────────────────────────────────────────
-# Position Sizing (Quarter-Kelly targeting Sortino maximization)
+# Position Sizing (score-proportional, research-validated)
 # ──────────────────────────────────────────────────────────
-KELLY_FRACTION: float = 0.25            # Quarter-Kelly for overconfidence control
 MIN_POSITION_WEIGHT: float = 0.05       # Minimum 5% NAV per position
 MAX_POSITION_WEIGHT: float = 0.30       # Maximum 30% NAV per position (concentration cap)
 
@@ -158,7 +163,7 @@ DRAWDOWN_KILL: float = -0.12            # Level 3: −12% → emergency exit all
 DRAWDOWN_RECOVERY_GATE: float = -0.08   # No new trades until drawdown < -8%
 
 # Per-position stops
-STOP_LOSS_PCT: float = -0.04            # Hard stop: −4% from entry (market order)
+STOP_LOSS_PCT: float = -0.03            # Hard stop: −3% from entry (H1 SL sweep robust plateau center)
 TRAILING_STOP_ACTIVATION: float = 0.03  # Trailing stop activates after +3% gain
 TRAILING_STOP_TRAIL_PCT: float = 0.025  # Trail at 2.5% from rolling high
 MAX_HOLD_HOURS: float = 72.0            # Force exit after 72h regardless of score
@@ -170,6 +175,22 @@ REENTRY_LOCKOUT_SECONDS: int = 2 * 3600 # 2-hour re-entry lockout after exit
 # BTC direct gates (independent of LSI; catches fast BTC crashes)
 BTC_BLOCK_NEW_ENTRIES_RETURN: float = -0.03     # BTC 2h return < -3%: block all new longs
 BTC_EMERGENCY_EXIT_RETURN: float = -0.06         # BTC 2h return < -6%: emergency exit all
+
+# ── H2C BTC-Diffusion Engine (standalone, portfolio-level) ───────────────────
+# Validated standalone: ret=+74.0%, Sortino=1.99, Calmar=20.25 (backtest 2026-03-18)
+# Portfolio aggregation research [G]: ALL PASS — Sortino=3.30, Calmar=19.22, OOS Sortino=1.40
+# Continuous allocation formula:
+#   f_t = H2C_MAX_FRACTION × min(1, |r_BTC,2h| / H2C_BTC_SCALE) × max(0, 1 − vol_z / H2C_Z_SCALE)
+# Fixed parameters anchored to failure modes (not swept):
+#   H2C_BTC_SCALE: validated from H2C gate sweep (Section B minimum meaningful BTC move)
+#   H2C_Z_SCALE:   2σ above rolling median = correlations spike, H2C signal degrades
+H2C_MAX_FRACTION: float = 0.50  # Swept in [G-1]; plateau center f_max_opt
+H2C_BTC_SCALE:    float = 0.003 # |r_BTC,2h| ramp threshold (btc_activity linear ramp)
+H2C_Z_SCALE:      float = 2.0   # vol_z at which stress_decay reaches 0
+H2C_BETA_WINDOW:       int   = 48    # Rolling OLS window (hours)
+H2C_BETA_MIN_OBS:      int   = 24    # Min observations before beta is usable
+H2C_MAX_HOLD_HOURS: float = 6.0   # Force exit H2C positions after 6h (sweep D optimal: HC=6 → Calmar=6.99)
+H2C_BTC_REV_EXIT:   float = -0.01 # Exit H2C if BTC 2h return < -1% since entry (sweep C optimal: Sortino=1.64)
 
 # ──────────────────────────────────────────────────────────
 # Execution
