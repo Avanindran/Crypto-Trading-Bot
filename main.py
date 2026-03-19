@@ -109,7 +109,11 @@ def run() -> None:
     saved = state_module.load_state()
     if saved:
         constraints.from_dict(saved.get("constraints", {}))
-        logger.info("Restored position state from disk")
+        drawdown_tracker.from_dict(saved.get("drawdown", {}))
+        logger.info(
+            "Restored position state from disk — peak_nav=%.2f in_recovery=%s",
+            drawdown_tracker.peak_nav, drawdown_tracker.in_recovery,
+        )
     else:
         logger.info("Starting with clean state")
 
@@ -218,7 +222,7 @@ def run() -> None:
 
             if signal_phase == 0:
                 logger.info("Pre-warmup: %d/%d min samples. Waiting.", min_samples, config.WARMUP_MIN_SAMPLES)
-                _persist_and_sleep(constraints, loop_start, beta_manager)
+                _persist_and_sleep(constraints, loop_start, beta_manager, drawdown_tracker)
                 continue
 
             # ── f. Fetch external signals (funding rates + Fear & Greed) ──────
@@ -459,6 +463,7 @@ def run() -> None:
                 constraints, beta_manager, dd_state, regime, lambda_t,
                 c1_scores, maturity, loop_count, signal_phase,
                 fng_value=fng_value,
+                drawdown_tracker=drawdown_tracker,
             )
 
         except KeyboardInterrupt:
@@ -479,11 +484,13 @@ def _persist_and_sleep(
     constraints: ConstraintEngine,
     loop_start: float,
     beta_manager: "BetaHistoryManager",
+    drawdown_tracker: DrawdownTracker,
 ) -> None:
     """Save state and sleep during warmup."""
     state_module.save_state({
         "constraints": constraints.to_dict(),
         "beta_hist":   beta_manager.to_dict(),
+        "drawdown":    drawdown_tracker.to_dict(),
     })
     elapsed = time.time() - loop_start
     time.sleep(max(0.0, config.LOOP_INTERVAL_SECONDS - elapsed))
@@ -500,12 +507,15 @@ def _persist_and_log(
     loop_count: int,
     signal_phase: int = 3,
     fng_value: Optional[float] = None,
+    drawdown_tracker: Optional[DrawdownTracker] = None,
 ) -> None:
     """Persist state and emit strategy state log entry."""
     state_data = {
         "constraints": constraints.to_dict(),
         "beta_hist":   beta_manager.to_dict(),
     }
+    if drawdown_tracker is not None:
+        state_data["drawdown"] = drawdown_tracker.to_dict()
     state_module.save_state(state_data)
 
     _PHASE_LABELS = {0: "pre-warmup", 1: "restricted", 2: "partial", 3: "full"}
