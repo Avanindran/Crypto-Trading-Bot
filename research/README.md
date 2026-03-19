@@ -92,7 +92,10 @@ research/
 ├── portfolio/                        How H1 + H2 combine in the allocation layer
 │   ├── 00_portfolio_design.md
 │   ├── 01_signal_aggregation.md      H1+H2 regime-conditional dual-engine framework
-│   └── 02_live_configuration.md      Current live state (H1 only; H2 pending)
+│   ├── 02_live_configuration.md      Current live configuration (H1+H2C active)
+│   ├── 03_combined_backtest.md       H1+H2C discrete allocation sweep (α_TREND=0.0 optimal)
+│   ├── 04_engine_integration.md      H2C deployment specification
+│   └── 05_dual_portfolio_backtest.md Section [G]: continuous allocation — ALL GATES PASSED
 │
 └── charts/
     ├── 03_validation/                ic_heatmap.png, ic_decay.png
@@ -154,8 +157,9 @@ research/
 | TS_ZSCORE_NEG_R2H | IC=+0.036, PROMOTE | signal_search.py |
 | HAZ_FNG_EXTREME | MaxDD improv +17.6%, APPROVED | modifier_screen.py |
 | MAT_VOL_RATIO | IC uplift +0.064, APPROVED | modifier_screen.py |
-| H2C Final (all modifiers) | ret=+74.0%, Sortino=1.99, Calmar=20.25 | backtest_simulation.py (2026-03-18) |
-| alpha_TREND_OPT | 0.0 (H1 alone) | backtest_simulation.py dual-engine sweep |
+| H2C standalone (all modifiers) | ret=+74.0%, Sortino=1.99, Calmar=20.25, MaxDD=−20.6% | backtest_simulation.py (2026-03-18) |
+| H1+H2C combined (f_max=0.50) | Sortino=3.30, Calmar=19.22, MaxDD=−13.7%, OOS Sortino=1.40 | backtest_simulation.py Section [G] |
+| Continuous allocation formula | f_t = f_max × btc_activity × stress_decay; f_max_opt=0.50 | research/portfolio/05_dual_portfolio_backtest.md |
 | Fee (corrected) | 0.05% maker (was 0.10% taker) | competition rules |
 
 ## Key Doctrine Files
@@ -167,3 +171,4 @@ research/
 | `research/10_pipeline_index.md` | Master index — every doctrine step → file → verdict |
 | `research/H1_reversal/00_mechanism.md` | Live signal mechanism (Reversal archetype) |
 | `research/H2_transitional_drift/00_mechanism.md` | H2 mechanism (Momentum archetype) |
+| `research/portfolio/05_dual_portfolio_backtest.md` | Section [G] dual-portfolio backtest — all gates passed |

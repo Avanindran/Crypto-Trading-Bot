@@ -80,15 +80,17 @@ If you compare the signal formula in [04_decision.md](04_decision.md) with the i
 
 ### C3 maturity modifier (provisional)
 
-The live bot's M_t composite uses four components (SMA extension, RSI proxy, pct_rank, funding rate). Only the pct_rank proxy was formally tested in the research pipeline. The remaining components (SMA extension, funding rate) address different aspects of overextension and are not covered by the IC validation above.
+The live bot's M_t composite uses four components (SMA extension, RSI proxy, pct_rank, funding rate). Two components were formally validated in the research pipeline:
+- **MAT_FUNDING_RATE:** APPROVED — IC uplift +0.010 (crowded longs suppress forward returns)
+- **MAT_VOL_RATIO:** APPROVED — IC uplift +0.064 (volume exhaustion is the strongest C3 proxy)
 
-**Caveat:** The funding rate component is new and untested against IC. It is retained on economic grounds (funding rate is a direct market signal of crowded positioning) but lacks the same validation rigor.
+The remaining components (SMA extension, pct_rank) are retained on composite economic grounds but were not individually approved (pct_rank was rejected as a standalone filter in trending conditions).
 
 ### Fee drag at 4h cadence
 
-The full-strategy backtest shows pre-fee return +16.4% but net return −23.1% over 4 months, with fee drag estimated at ~39.4%. At 4h rebalancing with limit orders, transaction cost is the dominant drag.
+The full-strategy backtest (0.05% maker fee, limit orders) shows net return +35.6% over 4 months (H1 engine). Fee drag is moderate at 0.05% maker vs 0.10% taker — the strategy is not viable at taker fees (see STRATEGY.md fee sensitivity table). The 4h minimum hold period and maturity filter reduce unnecessary turnover.
 
-**Implication:** Signal quality is sufficient to overcome fees in trending conditions (OOS pre-fee +16.4%). In sideways/bear conditions where raw returns are lower, the same fee drag becomes proportionally larger.
+**Implication:** At 0.05% maker fee and 4h+ holding periods, fee drag is manageable. Signal quality (Sortino=2.69, Calmar=11.73) is sufficient in trending conditions. In sideways/bear conditions, the regime overlay (HAZARD_DEFENSIVE) reduces exposure and protects against fee drag becoming disproportionate to reduced returns.
 
 ---
 

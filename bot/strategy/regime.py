@@ -109,6 +109,7 @@ class RegimeEngine:
         self._last_regime: RegimeState = RegimeState.NEUTRAL_MIXED
         self._last_lambda: float = config.REGIME_PARAMS["NEUTRAL_MIXED"]["lambda_t"]
         self._last_change_time: float = 0.0
+        self._last_btc_vol_z: float = 0.0
 
     # ── Index computation ──────────────────────────────────────────────────────
 
@@ -158,6 +159,7 @@ class RegimeEngine:
         if btc_features and btc_features.realized_vol_1h is not None:
             self._btc_vol_stats.add(btc_features.realized_vol_1h)
             vol_z = self._btc_vol_stats.z_score(btc_features.realized_vol_1h)
+            self._last_btc_vol_z = vol_z
             lsi_raw += config.LSI_WEIGHT_BTC_VOL * _norm_to_01(vol_z)
             weight_used += config.LSI_WEIGHT_BTC_VOL
 
@@ -295,13 +297,13 @@ class RegimeEngine:
         # LSI: HIGHEST dominance. When liquidity stress is elevated, go defensive immediately.
         if lsi > config.LSI_THRESHOLD_EMERGENCY:
             state = RegimeState.HAZARD_DEFENSIVE
-            lambda_t = 10.0
+            lambda_t = config.LAMBDA_HAZARD_EMERGENCY
         elif lsi > config.LSI_THRESHOLD_DEFENSIVE:
             state = RegimeState.HAZARD_DEFENSIVE
-            lambda_t = 4.0
+            lambda_t = config.REGIME_PARAMS["HAZARD_DEFENSIVE"]["lambda_t"]
         elif lsi > config.LSI_THRESHOLD_CAUTION or mpi < config.MPI_THRESHOLD_CHOP:
             state = RegimeState.NEUTRAL_MIXED
-            lambda_t = 1.5
+            lambda_t = config.LAMBDA_NEUTRAL_CAUTION
         elif fei > config.FEI_THRESHOLD_HIGH and mpi > 0.50:
             state = RegimeState.TREND_SUPPORTIVE
             lambda_t = config.REGIME_PARAMS["TREND_SUPPORTIVE"]["lambda_t"]
@@ -339,3 +341,8 @@ class RegimeEngine:
     @property
     def last_lambda(self) -> float:
         return self._last_lambda
+
+    @property
+    def last_btc_vol_z(self) -> float:
+        """Last computed BTC vol z-score (from LSI Component 1). Used for continuous H2C allocation."""
+        return self._last_btc_vol_z

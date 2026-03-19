@@ -165,3 +165,23 @@ class DrawdownTracker:
     @property
     def level(self) -> DrawdownLevel:
         return self._level
+
+    def to_dict(self) -> dict:
+        """Serialize drawdown state for crash-safe restart."""
+        return {
+            "peak_nav": self._peak_nav,
+            "in_recovery": self._in_recovery,
+        }
+
+    def from_dict(self, data: dict) -> None:
+        """
+        Restore peak NAV and recovery gate from saved state.
+
+        Only restores peak if the saved value exceeds current NAV — guards
+        against stale state from a different trading session where the bot
+        restarted with a higher initial balance.
+        """
+        saved_peak = data.get("peak_nav", 0.0)
+        if saved_peak > self._peak_nav:
+            self._peak_nav = saved_peak
+        self._in_recovery = data.get("in_recovery", False)

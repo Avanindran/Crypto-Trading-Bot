@@ -30,7 +30,7 @@ C3 maturity: 1 − M_t composite (extension, RSI proxy, pct_rank, funding rate)
              MAT_PCT_RANK, MAT_SMA_EXT, MAT_RSI_PROXY, MAT_TS_ZSCORE_R6H, MAT_CONSEC_UP → REJECTED
 
 Position score:  C1_i × exp(−λ_t) × (1 − M_t_i)
-Portfolio:       Quarter-Kelly sizing, regime-gated gross cap (0% / 65% / 85%)
+Portfolio:       Score-proportional sizing, regime-gated gross cap (0% / 65% / 85%)
 Risk:            3-tier drawdown response (−5% / −8% / −12% kill switch) + stops
 Fee:             0.05% per trade (maker; limit orders per competition rules)
 ```
@@ -60,13 +60,13 @@ Fee:             0.05% per trade (maker; limit orders per competition rules)
 | 7 | Regime allocation ladder | [overlays/portfolio_construction/02_regime_allocation.md](overlays/portfolio_construction/02_regime_allocation.md) | PROVISIONAL — Gate 1 fail (+3% Calmar); Gate 2 pass (+37% MaxDD); retained |
 | 8 | Signal nomination | [H1_reversal/04_decision.md](H1_reversal/04_decision.md) | H1_neg_c1_x07_H5_neg_vol promoted |
 | 9 | Strategy assembly | `bot/strategy/signals.py` | Deployed |
-| 10A | H1 mechanism backtest | [H1_reversal/02_Candidates/Strategy/02_backtest.md](H1_reversal/02_Candidates/Strategy/02_backtest.md) | Sortino 2.78, Calmar 11.03, MaxDD −15.5% (all risk overlays selected by sweep) |
-| 10B | H2C mechanism backtest | [H2_transitional_drift/02_Candidates/Strategy/01_backtest.md](H2_transitional_drift/02_Candidates/Strategy/01_backtest.md) | Sortino 1.34, Calmar 2.96 (BTC-rev exit −0.5% optimal) |
-| 10C | Dual-engine allocation | [portfolio/03_combined_backtest.md](portfolio/03_combined_backtest.md) | α_TREND=0.0 selected; Sortino 2.51, Calmar 9.68; OOS +1.5%; robustness PASS |
+| 10A | H1 mechanism backtest | [H1_reversal/02_Candidates/Strategy/02_backtest.md](H1_reversal/02_Candidates/Strategy/02_backtest.md) | Sortino 2.69, Calmar 11.73, MaxDD −13.6% (stop-loss −3%, score-prop sizing) |
+| 10B | H2C mechanism backtest | [H2_transitional_drift/02_Candidates/Strategy/01_backtest.md](H2_transitional_drift/02_Candidates/Strategy/01_backtest.md) | Sortino 1.99, Calmar 20.25, MaxDD −20.6% (BTC-rev exit −1%, 6h hold cap) |
+| 10C | Discrete dual-engine sweep | [portfolio/03_combined_backtest.md](portfolio/03_combined_backtest.md) | α_TREND=0.0 optimal; Sortino 2.51, Calmar 9.68 — superseded by Section [G] |
 | 12 (H1) | H1 engine robustness | [H1_reversal/02_Candidates/Strategy/03_robustness.md](H1_reversal/02_Candidates/Strategy/03_robustness.md) | 97.2% block-resample; IC positive at all weight perturbations |
 | 12 (H2) | H2C engine robustness | [H2_transitional_drift/02_Candidates/Strategy/02_robustness.md](H2_transitional_drift/02_Candidates/Strategy/02_robustness.md) | 88.6% block-resample hit rate; IC positive across all 9 parameter combos |
 
-**Backtest update (2026-03-17):** Mechanism-specific backtests. Risk overlays selected by parameter sweep (not hardcoded). H1 SL=−4% confirmed; EXIT_C1_THRESHOLD 0.20→0.25 updated. H2C standalone evaluated; dual-engine α=0.0 optimal (H1 dominates).
+**Backtest update (2026-03-18):** H1 SL=−3% (robust plateau center), score-proportional sizing deployed. H2C standalone Sortino=1.99/Calmar=20.25. Continuous allocation (Section [G]): f_max=0.50 → Sortino=3.30/Calmar=19.22/OOS Sortino=1.40 — ALL GATES PASSED.
 
 ---
 
