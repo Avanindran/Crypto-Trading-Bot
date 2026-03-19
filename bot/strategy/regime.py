@@ -64,7 +64,11 @@ class RollingStats:
             return 0.0
         mean = sum(self._buf) / n
         var = sum((x - mean) ** 2 for x in self._buf) / n
-        std = math.sqrt(var) if var > 0 else 1e-8
+        
+        # Robust minimum variance to prevent division by near-zero on sparse data
+        MIN_VARIANCE = 1e-4  # 0.01% squared (10 basis points)
+        std = math.sqrt(max(var, MIN_VARIANCE))
+        
         return (value - mean) / std
 
     def min_max_norm(self, value: float) -> float:
