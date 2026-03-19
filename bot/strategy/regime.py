@@ -108,6 +108,7 @@ class RegimeEngine:
 
         self._last_regime: RegimeState = RegimeState.NEUTRAL_MIXED
         self._last_lambda: float = config.REGIME_PARAMS["NEUTRAL_MIXED"]["lambda_t"]
+        self._last_change_time: float = 0.0
 
     # ── Index computation ──────────────────────────────────────────────────────
 
@@ -308,14 +309,26 @@ class RegimeEngine:
             state = RegimeState.NEUTRAL_MIXED
             lambda_t = config.REGIME_PARAMS["NEUTRAL_MIXED"]["lambda_t"]
 
-        if state != self._last_regime:
-            logger.info(
-                "REGIME CHANGE: %s → %s (LSI=%.3f MPI=%.3f FEI=%.3f λ=%.2f)",
-                self._last_regime.value, state.value, lsi, mpi, fei, lambda_t,
-            )
+        import time
+        current_time = time.time()
 
-        self._last_regime = state
-        self._last_lambda = lambda_t
+        if state != self._last_regime:
+            # Check if 15 mins (900s) have passed, UNLESS it is an emergency
+            time_since_change = current_time - self._last_change_time
+            is_emergency = (lsi > config.LSI_THRESHOLD_EMERGENCY)
+
+            if not is_emergency and time_since_change < 900:
+                # Cooldown active: Ignore the noise and maintain current state
+                state = self._last_regime
+                lambda_t = self._last_lambda
+            else:
+                logger.info(
+                    "REGIME CHANGE: %s → %s (LSI=%.3f MPI=%.3f FEI=%.3f λ=%.2f)",
+                    self._last_regime.value, state.value, lsi, mpi, fei, lambda_t,
+                )
+                self._last_regime = state
+                self._last_lambda = lambda_t
+                self._last_change_time = current_time
 
         return state, lambda_t
 

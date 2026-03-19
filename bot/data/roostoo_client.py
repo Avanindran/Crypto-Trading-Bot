@@ -185,7 +185,7 @@ class RoostooClient:
         data = resp.json()
         if not data.get("Success", False):
             raise RuntimeError(f"Balance call failed: {data}")
-        return data.get("Wallet", {})
+        return data.get("SpotWallet", {})
 
     @with_retry()
     def get_pending_count(self) -> int:
