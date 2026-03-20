@@ -109,11 +109,13 @@ def run() -> None:
     saved = state_module.load_state()
     if saved:
         constraints.from_dict(saved.get("constraints", {}))
-        drawdown_tracker.from_dict(saved.get("drawdown", {}))
-        logger.info(
-            "Restored position state from disk — peak_nav=%.2f in_recovery=%s",
-            drawdown_tracker.peak_nav, drawdown_tracker.in_recovery,
-        )
+        # Restore drawdown tracker state with proper validation
+        dd_data = saved.get("drawdown_tracker", {})
+        if dd_data:
+            drawdown_tracker.from_dict(dd_data)
+            logger.info("Restored drawdown tracker state from disk")
+        else:
+            logger.info("No drawdown tracker state found - using current NAV as peak")
     else:
         logger.info("Starting with clean state")
 
@@ -496,18 +498,9 @@ def run() -> None:
             time.sleep(sleep_time)
 
 
-def _persist_and_sleep(
-    constraints: ConstraintEngine,
-    loop_start: float,
-    beta_manager: "BetaHistoryManager",
-    drawdown_tracker: DrawdownTracker,
-) -> None:
+def _persist_and_sleep(constraints: ConstraintEngine, loop_start: float, drawdown_tracker: DrawdownTracker) -> None:
     """Save state and sleep during warmup."""
-    state_module.save_state({
-        "constraints": constraints.to_dict(),
-        "beta_hist":   beta_manager.to_dict(),
-        "drawdown":    drawdown_tracker.to_dict(),
-    })
+    state_module.save_state_with_drawdown({"constraints": constraints.to_dict()}, drawdown_tracker)
     elapsed = time.time() - loop_start
     time.sleep(max(0.0, config.LOOP_INTERVAL_SECONDS - elapsed))
 
@@ -526,13 +519,11 @@ def _persist_and_log(
     drawdown_tracker: Optional[DrawdownTracker] = None,
 ) -> None:
     """Persist state and emit strategy state log entry."""
-    state_data = {
-        "constraints": constraints.to_dict(),
-        "beta_hist":   beta_manager.to_dict(),
-    }
-    if drawdown_tracker is not None:
-        state_data["drawdown"] = drawdown_tracker.to_dict()
-    state_module.save_state(state_data)
+    state_data = {"constraints": constraints.to_dict()}
+    if drawdown_tracker:
+        state_module.save_state_with_drawdown(state_data, drawdown_tracker)
+    else:
+        state_module.save_state(state_data)
 
     _PHASE_LABELS = {0: "pre-warmup", 1: "restricted", 2: "partial", 3: "full"}
 

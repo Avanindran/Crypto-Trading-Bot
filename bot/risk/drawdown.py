@@ -177,11 +177,31 @@ class DrawdownTracker:
         """
         Restore peak NAV and recovery gate from saved state.
 
-        Only restores peak if the saved value exceeds current NAV — guards
-        against stale state from a different trading session where the bot
-        restarted with a higher initial balance.
+        IMPORTANT: Only restores peak if the saved value exceeds current NAV.
+        This guards against stale state from a different trading session where
+        the bot restarted with a higher initial balance.
+
+        However, if the saved peak is much higher than current NAV (indicating
+        a significant portfolio change), we should NOT restore it as it would
+        cause incorrect drawdown calculations.
         """
         saved_peak = data.get("peak_nav", 0.0)
-        if saved_peak > self._peak_nav:
+        current_nav = self._current_nav
+        
+        # Only restore peak if:
+        # 1. Saved peak is higher than current peak (normal case)
+        # 2. Saved peak is not significantly higher than current NAV (prevents stale state)
+        # Use a threshold of 50% to detect stale state
+        if saved_peak > self._peak_nav and saved_peak <= current_nav * 1.5:
             self._peak_nav = saved_peak
+            logger.info("Restored peak NAV from saved state: %.2f", saved_peak)
+        elif saved_peak > current_nav * 1.5:
+            logger.warning(
+                "Saved peak NAV (%.2f) is much higher than current NAV (%.2f) - ignoring stale state",
+                saved_peak, current_nav
+            )
+        else:
+            logger.info("Saved peak NAV (%.2f) not higher than current peak (%.2f) - keeping current",
+                       saved_peak, self._peak_nav)
+        
         self._in_recovery = data.get("in_recovery", False)
