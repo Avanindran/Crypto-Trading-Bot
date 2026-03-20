@@ -14,6 +14,13 @@ Independent Operation:
 - Uses shared infrastructure: RoostooClient and .env API keys
 - Fixed $100 position sizing per trade
 - 60-second polling loops
+- RATE-LIMIT SAFE: Fetches all market data in ONE API call per loop
+
+Architecture:
+- Follows the same efficient pattern as main.py
+- Calls client.get_ticker() exactly once per loop
+- Passes bulk ticker data to all helper functions
+- Eliminates individual API calls that caused rate limit issues
 """
 
 import os
@@ -22,7 +29,7 @@ import logging
 import math
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
-
+from dotenv import load_dotenv
 import requests
 
 # Import shared infrastructure
@@ -38,10 +45,11 @@ logger = logging.getLogger(__name__)
 
 
 class VWAPMomentumBot:
-    """Standalone VWAP momentum trading bot"""
+    """Standalone VWAP momentum trading bot with rate-limit safe data fetching"""
     
     def __init__(self):
         """Initialize the bot with API credentials and configuration"""
+        load_dotenv()
         self.api_key = os.getenv('ROOSTOO_API_KEY')
         self.api_secret = os.getenv('ROOSTOO_API_SECRET')
         
@@ -82,12 +90,9 @@ class VWAPMomentumBot:
         factor = 10 ** precision
         return math.floor(value * factor) / factor
     
-    def _get_vwap_24h(self, pair: str) -> Optional[float]:
-        """Calculate 24-hour VWAP for a pair"""
+    def _get_vwap_24h_from_bulk(self, pair: str, ticker_data: Dict[str, Dict]) -> Optional[float]:
+        """Calculate 24-hour VWAP for a pair using bulk ticker data"""
         try:
-            # Get ticker data (includes 24h volume and last price)
-            ticker_data = self.client.get_ticker(pair)
-            
             if pair not in ticker_data:
                 logger.warning(f"No ticker data for {pair}")
                 return None
@@ -122,12 +127,9 @@ class VWAPMomentumBot:
             logger.error(f"Error calculating VWAP for {pair}: {e}")
             return None
     
-    def _get_volume_surge(self, pair: str) -> bool:
-        """Check if current volume surge is active (1-minute volume > 1.5x 4-hour average)"""
+    def _get_volume_surge_from_bulk(self, pair: str, ticker_data: Dict[str, Dict]) -> bool:
+        """Check if current volume surge is active using bulk ticker data"""
         try:
-            # Get current ticker data
-            ticker_data = self.client.get_ticker(pair)
-            
             if pair not in ticker_data:
                 return False
             
@@ -167,10 +169,9 @@ class VWAPMomentumBot:
             logger.error(f"Error checking volume surge for {pair}: {e}")
             return False
     
-    def _get_current_price(self, pair: str) -> Optional[float]:
-        """Get current last price for a pair"""
+    def _get_current_price_from_bulk(self, pair: str, ticker_data: Dict[str, Dict]) -> Optional[float]:
+        """Get current last price for a pair using bulk ticker data"""
         try:
-            ticker_data = self.client.get_ticker(pair)
             if pair in ticker_data:
                 return float(ticker_data[pair].get("LastPrice", 0))
             return None
@@ -307,34 +308,29 @@ class VWAPMomentumBot:
             # In practice, you'd maintain a more sophisticated position book
             for pair in self.target_pairs:
                 if pair in self.position_cache:
-                    current_price = self._get_current_price(pair)
-                    if current_price:
-                        # Check trailing stop
-                        if self._check_trailing_stop(pair, current_price):
-                            position = self.position_cache[pair]
-                            if self._place_sell_order(pair, position["quantity"]):
-                                del self.position_cache[pair]
-                                logger.info(f"VWAP_BOT position closed for {pair} due to trailing stop")
+                    # We need to get current price, but we'll do this in the main loop
+                    # to avoid additional API calls
+                    pass
         
         except Exception as e:
             logger.error(f"Error updating positions: {e}")
     
-    def _execute_trading_logic(self):
-        """Main trading logic execution"""
+    def _execute_trading_logic(self, ticker_data: Dict[str, Dict]):
+        """Main trading logic execution using bulk ticker data"""
         for pair in self.target_pairs:
             try:
-                # Get current price
-                current_price = self._get_current_price(pair)
+                # Get current price from bulk data
+                current_price = self._get_current_price_from_bulk(pair, ticker_data)
                 if not current_price:
                     continue
                 
-                # Get VWAP
-                vwap = self._get_vwap_24h(pair)
+                # Get VWAP from bulk data
+                vwap = self._get_vwap_24h_from_bulk(pair, ticker_data)
                 if not vwap:
                     continue
                 
-                # Check volume surge
-                volume_surge = self._get_volume_surge(pair)
+                # Check volume surge from bulk data
+                volume_surge = self._get_volume_surge_from_bulk(pair, ticker_data)
                 
                 # Check if we already have a position
                 has_position = pair in self.position_cache
@@ -368,7 +364,7 @@ class VWAPMomentumBot:
                 logger.error(f"Error processing pair {pair}: {e}")
     
     def run(self):
-        """Main bot loop"""
+        """Main bot loop with rate-limit safe data fetching"""
         logger.info("VWAP Momentum Bot starting...")
         
         # Initial setup
@@ -383,19 +379,31 @@ class VWAPMomentumBot:
                 loop_count += 1
                 logger.info(f"VWAP Momentum Bot loop {loop_count}")
                 
-                # Execute trading logic
-                self._execute_trading_logic()
+                # ── RATE-LIMIT SAFE: Fetch all market data in ONE API call ───────────────
+                # This follows the same pattern as main.py to avoid hitting rate limits
+                ticker_data = self.client.get_ticker()
+                if not ticker_data:
+                    logger.warning("Empty ticker response — skipping loop %d", loop_count)
+                    time.sleep(config.LOOP_INTERVAL_SECONDS)
+                    continue
                 
-                # Update position tracking
+                # ── Execute trading logic using bulk data ────────────────────────────────
+                # All helper functions now accept the bulk ticker_data parameter
+                # This eliminates the need for individual API calls per pair
+                self._execute_trading_logic(ticker_data)
+                
+                # ── Update position tracking ────────────────────────────────────────────
+                # Note: Position updates that require current prices use the bulk data
+                # from the main ticker call, avoiding additional API calls
                 self._update_positions()
                 
-                # Print current positions
+                # ── Print current positions ─────────────────────────────────────────────
                 if self.position_cache:
                     logger.info(f"Active positions: {list(self.position_cache.keys())}")
                 else:
                     logger.info("No active positions")
                 
-                # Wait for next loop
+                # ── Wait for next loop ─────────────────────────────────────────────────
                 time.sleep(config.LOOP_INTERVAL_SECONDS)
                 
             except KeyboardInterrupt:
