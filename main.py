@@ -189,7 +189,23 @@ def run() -> None:
                     constraints.update_price(pair, price)
 
             # ── d. Update drawdown tracker ─────────────────────────────────────
+            # Get current positions from constraints (internal state)
             current_positions = {pair: rec.qty for pair, rec in constraints.all_positions().items()}
+            
+            # Calculate position values using current prices
+            position_value = 0.0
+            for pair, qty in current_positions.items():
+                price = prices_for_nav.get(pair)
+                if price and price > 0 and qty > 0:
+                    position_value += qty * price
+            
+            # Calculate current NAV: USD free + position value
+            current_nav = usd_free + position_value
+            
+            # Update drawdown tracker with correct NAV calculation
+            # Note: The drawdown tracker expects usd_free and positions separately,
+            # but it calculates NAV internally as usd_free + sum(position_qty * price)
+            # So we pass the correct parameters to ensure accurate NAV calculation
             dd_state = drawdown_tracker.update(usd_free, current_positions, prices_for_nav)
 
             # ── e. Signal quality phase gate ───────────────────────────────────
