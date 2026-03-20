@@ -1,5 +1,5 @@
 # H2C BTC Lead-Lag — Mechanism-Specific Backtest
-**Generated:** 2026-03-18 01:25 UTC
+**Generated:** 2026-03-18 08:53 UTC
 
 ## Signal Formula
 
@@ -114,5 +114,19 @@ IC(fresh)=+0.040 vs IC(uncond)=+0.023 (+72% uplift at threshold=0.40).
 | Max Drawdown | -20.6% |
 | H2_Z_OPT | 0.75 |
 | H2_MAT_OPT | None |
+
+---
+
+## Cost Scenario Analysis
+
+| Scenario | Entry Fee | Exit Fee | Sortino | Calmar | MaxDD |
+|----------|-----------|----------|---------|--------|-------|
+| maker/maker | 0.05% | 0.05% | 1.99 | 20.25 | -20.6% |
+| maker/taker | 0.05% | 0.10% | 1.66 | 12.71 | -22.1% |
+| taker/taker | 0.10% | 0.10% | 1.33 | 7.14 | -25.2% |
+
+Gate: Calmar > 0 in maker/taker scenario → **PASS**
+
+---
 
 *Charts: see `H2_transitional_drift/02_Candidates/Strategy/charts/backtest/`*

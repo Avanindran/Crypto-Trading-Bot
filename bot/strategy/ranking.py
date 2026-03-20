@@ -142,6 +142,42 @@ def rank_assets(
     return ranked
 
 
+def rank_h2c_assets(
+    h2c_scores: Dict[str, float],
+    regime: RegimeState,
+) -> List[RankedAsset]:
+    """
+    Rank assets for the H2C standalone BTC-diffusion engine.
+
+    Simpler than H1 ranking — no maturity filter, no exp(−λ_t) suppression:
+      - Gap score already encodes overextension (positive gap = asset still diffusing)
+      - Regime effect is applied at the capital-fraction level in main.py
+      - HAZARD_DEFENSIVE gates via H2C_CAPITAL_FRACTION_BY_REGIME=0 (never called)
+      - Only positive gap scores are eligible (asset is lagging BTC's directional move)
+
+    Args:
+        h2c_scores: CS z-scored gap scores from compute_h2c_scores().
+        regime:     Current market regime (controls max_positions cap).
+
+    Returns:
+        List of RankedAssets sorted by gap score descending, capped at max_positions.
+    """
+    params = config.REGIME_PARAMS[regime.value]
+    eligible: List[RankedAsset] = [
+        RankedAsset(
+            pair=pair,
+            c1_score=score,
+            m_t=0.0,        # H2C has no maturity concept — gap encodes it
+            c3=1.0,         # Full drift capacity for H2C entries
+            position_score=score,
+        )
+        for pair, score in h2c_scores.items()
+        if score > 0
+    ]
+    eligible.sort(key=lambda x: -x.position_score)
+    return eligible[: params["max_positions"]]
+
+
 def should_exit(
     pair: str,
     c1_scores: Dict[str, float],

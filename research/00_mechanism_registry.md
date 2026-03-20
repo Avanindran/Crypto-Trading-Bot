@@ -12,7 +12,7 @@ All mechanisms pre-committed before IC data was seen (see `00_objective_and_cons
 | Mechanism | Archetype | Proxy Status | Live? | Folder |
 |-----------|-----------|-------------|-------|--------|
 | **H1** Transient Expectation Overshoot | Reversal | PROMOTED | Yes | [H1_reversal/](H1_reversal/) |
-| **H2** Expectation Diffusion via BTC | Momentum | PENDING REBUILD | No | [H2_transitional_drift/](H2_transitional_drift/) |
+| **H2** Expectation Diffusion via BTC | Momentum | PROMOTED (H2c) | Yes | [H2_transitional_drift/](H2_transitional_drift/) |
 | **H5** Low-Vol Stability Filter | (H1 companion) | PROMOTED (as H1 blend) | Yes | [H1_reversal/](H1_reversal/) |
 | **H6** Streak Persistence | (rejected) | FAILED — near-zero IC | No | [H1_reversal/02_Candidates/Signal/03_rejected_proxies.md](H1_reversal/02_Candidates/Signal/03_rejected_proxies.md) |
 | **Regime** λ_t Hazard Rate | Overlay | APPROVED | Yes | [overlays/regime/](overlays/regime/) |
@@ -44,11 +44,11 @@ C1_raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h −
 ## H2 — Expectation Diffusion via BTC
 
 **Archetype:** Momentum (expectation updating speed error)
-**Status:** MECHANISM CONFIRMED — direct proxy PENDING REBUILD
+**Status:** MECHANISM CONFIRMED — H2c (beta-adjusted gap) PROMOTED and DEPLOYED
 
 **Mechanism:** E[r_i|I_t] ≈ βᵢ · r_BTC (shared factor exposure). When BTC reprices but altcoin has not yet adjusted: Δᵢ = βᵢ · r_BTC,h − r_i,h > 0 → unrealized expected return.
 
-**Why proxy failed:**
+**Why H2a/H2b failed:**
 - H2a: CS_z(alt_r − btc_r) = CS_z(alt_r) — mathematical identity (btc_r is cross-sectional constant)
 - H2b: lagged BTC return Pearson r ≈ −0.003 (diffusion < 1h resolution)
 
@@ -56,7 +56,7 @@ C1_raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h −
 - H1 IC @ BTC flat = +0.024 vs H1 IC @ BTC large move = +0.110
 - IC uplift = +0.087 >> gate of 0.010 → BTC-diffusion mechanism confirmed
 
-**Path forward:** Raw divergence signal_i = r_BTC − r_i (unzscored) or beta-adjusted Δᵢ
+**Live proxy (H2c):** `CS_z(β_i · r_BTC,2h − r_i,2h)` — IC=+0.042 @ 1h (t=+9.85). Deployed via continuous allocation: f_t = f_max × btc_activity × stress_decay (f_max=0.50). See `research/portfolio/05_dual_portfolio_backtest.md`.
 
 **References:** Kyle (1985), Grossman-Stiglitz (1980), Hou (2007), Lo-MacKinlay (1990)
 
@@ -77,11 +77,11 @@ C1_raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h −
 
 ## Maturity Overlay — M_t Drift Capacity
 
-**Status:** PROVISIONAL — pct_rank proxy REJECTED; composite retained with caveat
+**Status:** APPROVED — MAT_VOL_RATIO (+0.064 IC uplift) and MAT_FUNDING_RATE (+0.010 IC uplift) formally validated; pct_rank standalone REJECTED; composite retained
 
 **Mechanism:** Measures remaining correction potential. M_t ∈ [0,1]; (1−M_t) scales position size.
 
-**Key finding:** IC(fresh, pct_rank < 30%) = 0.018 < IC(unconditional) = 0.048 → pct_rank FAILS in trending period. Funding rate and SMA extension components retained on economic grounds.
+**Key finding:** IC(fresh, pct_rank < 30%) = 0.018 < IC(unconditional) = 0.048 → pct_rank FAILS in trending period. MAT_FUNDING_RATE APPROVED (IC uplift +0.010); MAT_VOL_RATIO APPROVED (strongest C3 proxy, IC uplift +0.064). Remaining components (SMA extension, pct_rank) retained on composite economic grounds.
 
 **Docs:** [overlays/maturity/00_mechanism.md](overlays/maturity/00_mechanism.md)
 
@@ -89,7 +89,7 @@ C1_raw_i = 0.10×r_30m + 0.20×r_2h + 0.35×r_6h + 0.25×r_24h + 0.10×(r_2h −
 
 ## Portfolio Layer
 
-**Status:** H1 live; H2 pending
+**Status:** H1 live; H2C live (continuous allocation, f_max=0.50)
 
 **Live formula:** `PositionScore_i = C1_i × exp(−λ_t) × (1 − M_t_i)`
 

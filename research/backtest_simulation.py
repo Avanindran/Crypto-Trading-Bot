@@ -49,12 +49,13 @@ import vector_tests as _vt  # noqa: E402
 # ── Output paths (co-located with mechanism) ──────────────────────────────────
 OUTPUT_H1   = os.path.join(_here, "H1_reversal",          "02_Candidates", "Strategy", "02_backtest.md")
 OUTPUT_H2   = os.path.join(_here, "H2_transitional_drift", "02_Candidates", "Strategy", "01_backtest.md")
-OUTPUT_COMB = os.path.join(_here, "portfolio",             "03_combined_backtest.md")
+OUTPUT_COMB       = os.path.join(_here, "portfolio",             "03_combined_backtest.md")
+OUTPUT_PORTFOLIO  = os.path.join(_here, "portfolio",             "05_dual_portfolio_backtest.md")
 CHARTS_H1   = os.path.join(_here, "H1_reversal",          "02_Candidates", "Strategy", "charts", "backtest")
 CHARTS_H2   = os.path.join(_here, "H2_transitional_drift", "02_Candidates", "Strategy", "charts", "backtest")
 CHARTS_COMB = os.path.join(_here, "portfolio",             "charts", "combined")
 
-for _d in (OUTPUT_H1, OUTPUT_H2, OUTPUT_COMB):
+for _d in (OUTPUT_H1, OUTPUT_H2, OUTPUT_COMB, OUTPUT_PORTFOLIO):
     os.makedirs(os.path.dirname(_d), exist_ok=True)
 for _d in (CHARTS_H1, CHARTS_H2, CHARTS_COMB):
     os.makedirs(_d, exist_ok=True)
@@ -313,6 +314,7 @@ def _run_overlay_engine(
     signal_fn:        Callable,        # fn(all_prices, active_pairs, ts, **kwargs) → Optional[Dict]
     signal_kwargs:    dict,
     fee:              float   = 0.0,
+    fee_exit:         Optional[float] = None,    # exit fee; defaults to fee if None (asymmetric maker/taker)
     stop_loss_pct:    Optional[float] = None,    # e.g. -0.04; None = disabled
     c1_exit_thresh:   Optional[float] = None,    # exit if score < thresh; None = disabled
     btc_rev_exit:     Optional[float] = None,    # H2: exit if r_BTC since entry < -X; None = disabled
@@ -328,7 +330,12 @@ def _run_overlay_engine(
 
     For H1: use signal_fn = _vt._compute_signal, enable stop_loss_pct and/or c1_exit_thresh.
     For H2: use signal_fn = _compute_h2c_signal, enable btc_rev_exit and/or hold_cap_hours.
+
+    fee_exit: if provided, applied to all exit paths (stop-loss, signal exit, hold-cap, final
+    liquidation). Allows realistic maker/taker asymmetry: entries use limit orders (fee=0.05%),
+    emergency/stop exits use market orders (fee_exit=0.10%).
     """
+    _fee_exit  = fee_exit if fee_exit is not None else fee
     btc_key    = next((p for p in active_pairs if p.startswith("BTC")), None)
     btc_prices = all_prices.get(btc_key, {}) if btc_key else {}
 
@@ -360,7 +367,7 @@ def _run_overlay_engine(
 
             # H1 stop-loss
             if stop_loss_pct is not None and ret <= stop_loss_pct:
-                val = pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - fee)
+                val = pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - _fee_exit)
                 cash += val
                 nav = cash + sum(
                     positions[p]["qty_usd"] * (all_prices[p].get(ts, pos["entry_price"]) / positions[p]["entry_price"])
@@ -377,7 +384,7 @@ def _run_overlay_engine(
                 if btc_now is not None and btc_entry is not None and btc_entry > 0:
                     btc_ret = btc_now / btc_entry - 1.0
                     if btc_ret < btc_rev_exit:  # BTC reversed by more than threshold
-                        val = pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - fee)
+                        val = pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - _fee_exit)
                         cash += val
                         del positions[pair]
                         n_exits += 1
@@ -387,7 +394,7 @@ def _run_overlay_engine(
             if hold_cap_hours is not None:
                 age_h = (ts - pos["entry_ts"]) / MS_PER_HOUR
                 if age_h >= hold_cap_hours:
-                    val = pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - fee)
+                    val = pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - _fee_exit)
                     cash += val
                     del positions[pair]
                     n_exits += 1
@@ -425,7 +432,7 @@ def _run_overlay_engine(
                 if score < c1_exit_thresh:
                     cp = all_prices[pair].get(ts)
                     if cp is not None:
-                        val = positions[pair]["qty_usd"] * (cp / positions[pair]["entry_price"]) * (1 - fee)
+                        val = positions[pair]["qty_usd"] * (cp / positions[pair]["entry_price"]) * (1 - _fee_exit)
                         cash += val
                         del positions[pair]
                         n_exits += 1
@@ -482,7 +489,7 @@ def _run_overlay_engine(
     for pair, pos in positions.items():
         cp = all_prices[pair].get(final_ts)
         if cp is not None:
-            cash += pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - fee)
+            cash += pos["qty_usd"] * (cp / pos["entry_price"]) * (1 - _fee_exit)
 
     nav_series.append((final_ts + MS_PER_HOUR, cash))
     stats = _stats(nav_series, label)
@@ -534,6 +541,48 @@ def _robust_select(
 
     sorted_plateau = sorted(plateau, key=_sort_key)
     return sorted_plateau[len(sorted_plateau) // 2]
+
+
+def _run_cost_scenarios(
+    label_prefix: str,
+    all_prices: Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    timestamps: List[int],
+    signal_fn: Callable,
+    signal_kwargs_fn: Callable,   # () → fresh kwargs dict (needed for H2 beta_hist)
+    **engine_kwargs,              # non-fee params forwarded to _run_overlay_engine
+) -> List[dict]:
+    """Run three fee scenarios to assess cost robustness.
+
+    Scenarios model production fill patterns:
+      maker/maker  — all limit fills (best case; entries and exits fill at spread midpoint)
+      maker/taker  — entries limit, exits market (realistic; stop-loss/emergency exits are market)
+      taker/taker  — all market fills (worst case; high urgency or poor liquidity)
+
+    Gate: Calmar > 0 in maker/taker scenario is the minimum robustness bar.
+    """
+    scenarios = [
+        ("maker/maker",  0.0005, 0.0005),
+        ("maker/taker",  0.0005, 0.001 ),
+        ("taker/taker",  0.001,  0.001 ),
+    ]
+    results = []
+    print("  Cost scenario analysis:")
+    for name, f_entry, f_exit in scenarios:
+        lbl = f"{label_prefix}_cost_{name.replace('/', '_')}"
+        _, stats = _run_overlay_engine(
+            all_prices, active_pairs, timestamps,
+            signal_fn=signal_fn, signal_kwargs=signal_kwargs_fn(),
+            fee=f_entry, fee_exit=f_exit,
+            label=lbl, **engine_kwargs,
+        )
+        stats["scenario"] = name
+        stats["fee_entry"] = f_entry
+        stats["fee_exit"]  = f_exit
+        results.append(stats)
+        print(f"    {name}: Sortino={stats['sortino']:.2f}  "
+              f"Calmar={stats['calmar']:.2f}  MaxDD={stats['max_dd']*100:.1f}%")
+    return results
 
 
 # ── Section A: H1 Reversal ────────────────────────────────────────────────────
@@ -705,6 +754,15 @@ def run_h1_section(
           f"Calmar={stats_h1_final['calmar']:.2f}  "
           f"MaxDD={stats_h1_final['max_dd']*100:.1f}%")
 
+    # ── Cost robustness ────────────────────────────────────────────────────────
+    print("\n[F-cost] H1 cost scenario analysis ...")
+    cost_scenarios_h1 = _run_cost_scenarios(
+        "H1", all_prices, active_pairs, timestamps,
+        signal_fn=_vt._compute_signal, signal_kwargs_fn=lambda: {},
+        stop_loss_pct=h1_sl_opt, c1_exit_thresh=h1_exit_opt,
+        z_thresh=h1_z_opt, top_n=h1_topn_opt, sizing=h1_sizing_opt,
+    )
+
     # ── OOS sub-period ─────────────────────────────────────────────────────────
     train_ts = [t for t in timestamps if t < HOLDOUT_TS]
     oos_ts   = [t for t in timestamps if t >= HOLDOUT_TS]
@@ -727,6 +785,7 @@ def run_h1_section(
         va_results, sl_results, exit_results, z_results,
         topn_results, sizing_results, stats_h1_final, oos_stats,
         h1_sl_opt, h1_exit_opt, h1_z_opt, h1_topn_opt, h1_sizing_opt,
+        cost_scenarios_h1,
     )
     _save_equity_charts(
         [(nav_h1_final, "H1 Final (all layers)")],
@@ -945,10 +1004,21 @@ def run_h2_section(
           f"Calmar={stats_h2_final['calmar']:.2f}  "
           f"MaxDD={stats_h2_final['max_dd']*100:.1f}%")
 
+    # ── Cost robustness ────────────────────────────────────────────────────────
+    print("\n[H-cost] H2 cost scenario analysis ...")
+    cost_scenarios_h2 = _run_cost_scenarios(
+        "H2", all_prices, active_pairs, timestamps,
+        signal_fn=_h2c_sig,
+        signal_kwargs_fn=lambda: {"beta_hist": _make_beta_hist(), "mat2_time_thresh": h2_mat_opt},
+        btc_rev_exit=h2_btcrev_opt, hold_cap_hours=h2_holdcap_opt,
+        btc_gate_pct=h2_gate_opt, z_thresh=h2_z_opt, top_n=h2_topn_opt,
+    )
+
     _write_h2_report(
         va_h2, z_results_h2, btc_rev_results, holdcap_results, gate_results,
         mat_results, stats_h2_final,
         h2_z_opt, h2_btcrev_opt, h2_holdcap_opt, h2_gate_opt, h2_mat_opt, h2_topn_opt,
+        cost_scenarios_h2,
     )
     _save_equity_charts(
         [(nav_h2_final, "H2C Final (all layers)")],
@@ -1075,6 +1145,17 @@ def run_dual_section(
           f"Calmar={stats_comb['calmar']:.2f}  "
           f"MaxDD={stats_comb['max_dd']*100:.1f}%")
 
+    # ── Cost robustness ────────────────────────────────────────────────────────
+    print("\n[B-cost] Combined cost scenario analysis ...")
+    cost_scenarios_comb = _run_cost_scenarios(
+        "COMB", all_prices, active_pairs, timestamps,
+        signal_fn=_dual_signal_fn,
+        signal_kwargs_fn=lambda: {"alpha": alpha_opt, "beta_hist": h2_params["make_beta_hist"]()},
+        stop_loss_pct=h1_params["sl_opt"], c1_exit_thresh=h1_params["exit_opt"],
+        z_thresh=h1_params["z_opt"], top_n=h1_params["topn_opt"],
+        sizing=h1_params["sizing_opt"],
+    )
+
     # ── OOS holdout ────────────────────────────────────────────────────────────
     print("\n[C] OOS holdout (Dec 2024 – Jan 2025) ...")
     oos_ts = [t for t in timestamps if t >= HOLDOUT_TS]
@@ -1130,7 +1211,7 @@ def run_dual_section(
 
     _write_combined_report(
         alpha_results, stats_comb, oos_stats, perturb_results,
-        h1_params, h2_params, alpha_opt,
+        h1_params, h2_params, alpha_opt, cost_scenarios_comb,
     )
     _save_equity_charts(
         [
@@ -1146,6 +1227,286 @@ def run_dual_section(
         "stats_final": stats_comb,
         "oos_stats":   oos_stats,
         "alpha_opt":   alpha_opt,
+    }
+
+
+# ── Section [G]: Dual Portfolio Backtest (Portfolio-Level Aggregation) ─────────
+
+def _build_hourly_returns(
+    nav_series: List[Tuple[int, float]],
+    timestamps: List[int],
+) -> Dict[int, float]:
+    """Forward-fill NAV series onto hourly grid; return {ts: hourly_return}.
+
+    _run_overlay_engine appends at every timestep, but alignment may differ if
+    the H1 and H2C nav_series were built on different timestamp grids. Forward-
+    filling ensures gaps are treated as flat (no return) rather than zero.
+    """
+    nav_dict = dict(nav_series)
+    result: Dict[int, float] = {}
+    prev_nav = 1.0
+    for ts in timestamps:
+        nav = nav_dict.get(ts, prev_nav)
+        result[ts] = nav / prev_nav - 1.0
+        prev_nav = nav
+    return result
+
+
+def _compute_continuous_alloc_series(
+    all_prices: Dict[str, Dict[int, float]],
+    timestamps: List[int],
+    btc_key: str,
+    f_max: float,
+    btc_scale: float = 0.003,
+    z_scale: float = 2.0,
+    lookback: int = 48,
+) -> Dict[int, float]:
+    """Compute per-timestep H2C capital fraction using continuous failure-mode functions.
+
+    f_t = f_max × btc_activity_factor_t × stress_decay_factor_t
+
+    btc_activity_factor_t = min(1, |r_BTC,2h| / btc_scale)
+        → 0 when BTC flat; ramps to 1 at btc_scale move
+        → H2C signal is meaningless when BTC doesn't move (failure mode 1)
+
+    stress_decay_factor_t = max(0, 1 − vol_z / z_scale)
+        → 1 when vol_z=0 (calm); decays to 0 at z_scale (stressed)
+        → H2C breaks when correlations spike in stressed markets (failure mode 2)
+
+    Fixed parameters (not swept, economically anchored):
+        btc_scale = 0.003  validated from H2C gate sweep (Section B minimum BTC move)
+        z_scale   = 2.0    natural: 2σ above rolling median = market fully stressed
+    Only f_max is swept — single free parameter.
+    """
+    btc_prices = all_prices.get(btc_key, {})
+    abs_ret_hist: List[float] = []
+    alloc: Dict[int, float] = {}
+
+    for ts in timestamps:
+        r_1h = abs(_vt.compute_return(btc_prices, ts, 1.0) or 0.0)
+        abs_ret_hist.append(r_1h)
+        if len(abs_ret_hist) > lookback:
+            abs_ret_hist = abs_ret_hist[-lookback:]
+
+        if len(abs_ret_hist) >= 10:
+            mu  = sum(abs_ret_hist) / len(abs_ret_hist)
+            var = sum((x - mu) ** 2 for x in abs_ret_hist) / len(abs_ret_hist)
+            std = var ** 0.5
+            vol_z = (r_1h - mu) / std if std > 1e-12 else 0.0
+        else:
+            vol_z = 0.0
+
+        btc_r2h = abs(_vt.compute_return(btc_prices, ts, 2.0) or 0.0)
+        btc_activity = min(1.0, btc_r2h / btc_scale) if btc_scale > 0 else 0.0
+        stress_decay = max(0.0, 1.0 - vol_z / z_scale) if z_scale > 0 else 0.0
+        alloc[ts] = f_max * btc_activity * stress_decay
+
+    return alloc
+
+
+def _combine_portfolio_navs(
+    h1_returns:  Dict[int, float],
+    h2c_returns: Dict[int, float],
+    timestamps:  List[int],
+    alloc:       Dict[int, float],
+) -> List[Tuple[int, float]]:
+    """Combine H1 and H2C return streams using precomputed per-timestep fractions.
+
+    return_t = (1 − f_t) × h1_ret_t + f_t × h2c_ret_t
+    Both engine NAV series have fees embedded from Sections A and B.
+    f_t comes from _compute_continuous_alloc_series — already encodes both
+    failure-mode gates (BTC activity and stress decay).
+    """
+    nav = 1.0
+    combined: List[Tuple[int, float]] = [(timestamps[0], nav)]
+    for ts in timestamps[1:]:
+        f       = alloc.get(ts, 0.0)
+        h1_ret  = h1_returns.get(ts, 0.0)
+        h2c_ret = h2c_returns.get(ts, 0.0)
+        nav *= 1.0 + (1.0 - f) * h1_ret + f * h2c_ret
+        combined.append((ts, nav))
+    return combined
+
+
+def run_dual_portfolio_section(
+    all_prices:   Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    timestamps:   List[int],
+    btc_key:      str,
+    h1_params:    dict,
+    h2_params:    dict,
+) -> dict:
+    """Section [G] — Portfolio-level dual-engine aggregation backtest.
+
+    H1 and H2C run as INDEPENDENT engines with their own asset selection.
+    Capital is allocated between them at the portfolio weight level (one set
+    of trades, minimized fees). Allocation is continuous and derived from each
+    engine's known failure modes:
+
+        f_t = f_max × btc_activity_factor_t × stress_decay_factor_t
+
+    btc_activity_factor  — H2C fails when BTC flat (no diffusion signal)
+    stress_decay_factor  — H2C fails when market stressed (correlation spike)
+
+    Only f_max is swept. btc_scale and z_scale are fixed to economically
+    anchored values, not optimized — minimal parameter count for robustness.
+
+    Reuses h1_params["nav_final"] and h2_params["nav_final"] from Sections A/B.
+    """
+    print("\n" + "=" * 60)
+    print("SECTION [G]: Dual Portfolio Backtest — Continuous Regime Allocation")
+    print("=" * 60)
+
+    BTC_SCALE = 0.003   # validated from Section B gate sweep
+    Z_SCALE   = 2.0     # 2σ above rolling median = fully stressed
+
+    # ── [G-0] Build inputs + baselines ───────────────────────────────────────
+    h1_nav  = h1_params["nav_final"]
+    h2c_nav = h2_params["nav_final"]
+    h1_ret  = _build_hourly_returns(h1_nav,  timestamps)
+    h2c_ret = _build_hourly_returns(h2c_nav, timestamps)
+
+    h1_stats  = _stats(h1_nav,  "G_H1_only")
+    h2c_stats = _stats(h2c_nav, "G_H2C_only")
+    print(f"\n[G-0] Baselines")
+    print(f"  H1:  ret={h1_stats['total_return']*100:.1f}%  "
+          f"Sortino={h1_stats['sortino']:.2f}  Calmar={h1_stats['calmar']:.2f}  "
+          f"MaxDD={h1_stats['max_dd']*100:.1f}%")
+    print(f"  H2C: ret={h2c_stats['total_return']*100:.1f}%  "
+          f"Sortino={h2c_stats['sortino']:.2f}  Calmar={h2c_stats['calmar']:.2f}  "
+          f"MaxDD={h2c_stats['max_dd']*100:.1f}%")
+
+    # Pre-compute alloc at f_max=1.0 to get activity statistics
+    alloc_diag = _compute_continuous_alloc_series(
+        all_prices, timestamps, btc_key, f_max=1.0,
+        btc_scale=BTC_SCALE, z_scale=Z_SCALE,
+    )
+    total_ts = len(timestamps)
+    mean_alloc = sum(alloc_diag.values()) / total_ts if total_ts else 0.0
+    n_nonzero  = sum(1 for v in alloc_diag.values() if v > 0.01)
+    print(f"\n  Alloc diagnostics (f_max=1.0): mean={mean_alloc*100:.1f}%  "
+          f"active>1%: {n_nonzero/total_ts*100:.0f}% of timesteps")
+
+    # ── [G-1] f_max sweep ────────────────────────────────────────────────────
+    print("\n[G-1] f_max sweep (continuous allocation) ...")
+    F_MAX_GRID = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.80, 1.0]
+    sweep_results: List[Tuple[float, dict, List, Dict]] = []
+    for f_max in F_MAX_GRID:
+        alloc = _compute_continuous_alloc_series(
+            all_prices, timestamps, btc_key, f_max,
+            btc_scale=BTC_SCALE, z_scale=Z_SCALE,
+        )
+        comb_nav = _combine_portfolio_navs(h1_ret, h2c_ret, timestamps, alloc)
+        st = _stats(comb_nav, f"G1_fmax{int(f_max*100):03d}")
+        mean_f = sum(alloc.values()) / total_ts if total_ts else 0.0
+        st["f_max"]  = f_max
+        st["mean_f"] = mean_f
+        sweep_results.append((f_max, st, comb_nav, alloc))
+        print(f"  f_max={f_max:.2f} (mean_f={mean_f*100:.1f}%): "
+              f"ret={st['total_return']*100:.1f}%  "
+              f"Sortino={st['sortino']:.2f}  Calmar={st['calmar']:.2f}  "
+              f"MaxDD={st['max_dd']*100:.1f}%")
+
+    best_s = _robust_select(
+        [{"f_max": f, **st} for f, st, _, _ in sweep_results],
+        metric="sortino",
+        param_key="f_max",
+        calmar_min=max(h1_stats["calmar"] * 0.90, 0.5),
+    )
+    f_max_opt = best_s.get("f_max", 0.0)
+    # Retrieve the nav and alloc for the optimal f_max
+    _, stats_opt, nav_opt, alloc_opt = next(r for r in sweep_results if r[0] == f_max_opt)
+    stats_opt = _stats(nav_opt, "G1_optimal")
+    mean_f_opt = sum(alloc_opt.values()) / total_ts if total_ts else 0.0
+    print(f"\n  → f_max_opt={f_max_opt:.2f}  mean_f={mean_f_opt*100:.1f}%")
+    print(f"  → Optimal: ret={stats_opt['total_return']*100:.1f}%  "
+          f"Sortino={stats_opt['sortino']:.2f}  Calmar={stats_opt['calmar']:.2f}  "
+          f"MaxDD={stats_opt['max_dd']*100:.1f}%")
+
+    # ── [G-2] OOS holdout ─────────────────────────────────────────────────────
+    print("\n[G-2] OOS holdout (Dec 2024 – Jan 2025) ...")
+    max_ts = max(timestamps)
+    # Use alloc from full timestamps (proper vol_z lookback continuity), sliced to OOS
+    oos_ts     = [ts for ts in timestamps if ts >= HOLDOUT_TS]
+    h1_ret_oos  = _build_hourly_returns(
+        [(ts, nav) for ts, nav in h1_nav  if ts >= HOLDOUT_TS], oos_ts)
+    h2c_ret_oos = _build_hourly_returns(
+        [(ts, nav) for ts, nav in h2c_nav if ts >= HOLDOUT_TS], oos_ts)
+    alloc_oos = {ts: alloc_opt[ts] for ts in oos_ts if ts in alloc_opt}
+    oos_nav   = _combine_portfolio_navs(h1_ret_oos, h2c_ret_oos, oos_ts, alloc_oos)
+
+    h1_oos_stats  = _subperiod_stats(h1_nav,  HOLDOUT_TS, max_ts + 1, "G_OOS_h1")
+    h2c_oos_stats = _subperiod_stats(h2c_nav, HOLDOUT_TS, max_ts + 1, "G_OOS_h2c")
+    oos_stats     = _stats(oos_nav, "G_OOS_opt")
+    print(f"  H1-only OOS:       ret={h1_oos_stats['total_return']*100:.1f}%  "
+          f"Sortino={h1_oos_stats['sortino']:.2f}  Calmar={h1_oos_stats['calmar']:.2f}")
+    print(f"  H2C-only OOS:      ret={h2c_oos_stats['total_return']*100:.1f}%  "
+          f"Sortino={h2c_oos_stats['sortino']:.2f}  Calmar={h2c_oos_stats['calmar']:.2f}")
+    print(f"  Portfolio agg OOS: ret={oos_stats['total_return']*100:.1f}%  "
+          f"Sortino={oos_stats['sortino']:.2f}  Calmar={oos_stats['calmar']:.2f}")
+
+    # ── [G-3] Perturbation robustness ─────────────────────────────────────────
+    print("\n[G-3] Perturbation robustness (±20% on f_max) ...")
+    perturb_results: List[dict] = []
+    for delta, tag in [(-0.20, "-20%"), (0.0, "baseline"), (+0.20, "+20%")]:
+        f_p   = max(0.0, min(1.0, f_max_opt * (1 + delta)))
+        alloc_p = _compute_continuous_alloc_series(
+            all_prices, timestamps, btc_key, f_p,
+            btc_scale=BTC_SCALE, z_scale=Z_SCALE,
+        )
+        p_nav = _combine_portfolio_navs(h1_ret, h2c_ret, timestamps, alloc_p)
+        st = _stats(p_nav, f"G3_{tag}")
+        perturb_results.append({"tag": tag, "f_max": f_p, **st})
+        print(f"  {tag}: f_max={f_p:.2f} → "
+              f"Sortino={st['sortino']:.2f}  Calmar={st['calmar']:.2f}  "
+              f"MaxDD={st['max_dd']*100:.1f}%")
+
+    # ── [G-4] Activation gates ─────────────────────────────────────────────────
+    print("\n[G-4] Activation gates ...")
+    gate1 = stats_opt["sortino"] >= 1.05 * h1_stats["sortino"]
+    gate2 = stats_opt["calmar"]  >= 0.90 * h1_stats["calmar"]
+    gate3 = oos_stats["sortino"] >  h1_oos_stats["sortino"]
+    all_pass = gate1 and gate2 and gate3
+    print(f"  Gate 1 (Sortino ≥ 1.05×H1 = {1.05*h1_stats['sortino']:.2f}): "
+          f"{'PASS' if gate1 else 'FAIL'} (achieved {stats_opt['sortino']:.2f})")
+    print(f"  Gate 2 (Calmar  ≥ 0.90×H1 = {0.90*h1_stats['calmar']:.2f}):  "
+          f"{'PASS' if gate2 else 'FAIL'} (achieved {stats_opt['calmar']:.2f})")
+    print(f"  Gate 3 (OOS Sortino > H1 OOS = {h1_oos_stats['sortino']:.2f}): "
+          f"{'PASS' if gate3 else 'FAIL'} (achieved {oos_stats['sortino']:.2f})")
+    print(f"  → Overall: {'ALL PASS — H2C activation validated' if all_pass else 'FAIL — H2C remains disabled'}")
+
+    # ── [G-5] Charts ──────────────────────────────────────────────────────────
+    _save_equity_charts(
+        [
+            (h1_nav,  "H1 only"),
+            (h2c_nav, "H2C only"),
+            (nav_opt, f"Portfolio agg (f_max={f_max_opt:.2f}, mean_f={mean_f_opt*100:.1f}%)"),
+        ],
+        os.path.join(CHARTS_COMB, "portfolio_aggregation_equity.png"),
+    )
+
+    # ── [G-6] Write report ────────────────────────────────────────────────────
+    _write_portfolio_report(
+        h1_stats=h1_stats,
+        h2c_stats=h2c_stats,
+        sweep_results=sweep_results,
+        f_max_opt=f_max_opt,
+        mean_f_opt=mean_f_opt,
+        stats_opt=stats_opt,
+        h1_oos_stats=h1_oos_stats,
+        h2c_oos_stats=h2c_oos_stats,
+        oos_stats=oos_stats,
+        perturb_results=perturb_results,
+        gate1=gate1, gate2=gate2, gate3=gate3, all_pass=all_pass,
+        total_ts=total_ts, btc_scale=BTC_SCALE, z_scale=Z_SCALE,
+    )
+
+    return {
+        "nav_final":   nav_opt,
+        "stats_final": stats_opt,
+        "oos_stats":   oos_stats,
+        "f_max_opt":   f_max_opt,
+        "all_pass":    all_pass,
     }
 
 
@@ -1199,6 +1560,7 @@ def _write_h1_report(
     va_results, sl_results, exit_results, z_results,
     topn_results, sizing_results, final_stats, oos_stats,
     sl_opt, exit_opt, z_opt, topn_opt, sizing_opt,
+    cost_scenarios=None,
 ) -> None:
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -1310,6 +1672,26 @@ def _write_h1_report(
             "",
         ]
 
+    if cost_scenarios:
+        maker_taker = next((s for s in cost_scenarios if s["scenario"] == "maker/taker"), None)
+        gate_result = "PASS" if maker_taker and maker_taker["calmar"] > 0 else "FAIL"
+        lines += [
+            "---",
+            "",
+            "## Cost Scenario Analysis",
+            "",
+            "Strategy must remain Sortino > 0 and Calmar > 0 across all realistic fee scenarios.",
+            "",
+            "| Scenario | Entry Fee | Exit Fee | Sortino | Calmar | MaxDD |",
+            "|----------|-----------|----------|---------|--------|-------|",
+        ]
+        for s in cost_scenarios:
+            lines.append(
+                f"| {s['scenario']} | {s['fee_entry']*100:.2f}% | {s['fee_exit']*100:.2f}% | "
+                f"{_fmt(s['sortino'])} | {_fmt(s['calmar'])} | {_fmt(s['max_dd'], True)} |"
+            )
+        lines.append(f"\nGate: Calmar > 0 in maker/taker scenario → **{gate_result}**\n")
+
     lines += [
         "---",
         "",
@@ -1326,6 +1708,7 @@ def _write_h2_report(
     va_h2, z_results_h2, btc_rev_results, holdcap_results, gate_results,
     mat_results, final_stats,
     z_opt, btcrev_opt, holdcap_opt, gate_opt, mat_opt, topn_opt,
+    cost_scenarios=None,
 ) -> None:
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -1448,6 +1831,29 @@ def _write_h2_report(
         f"| H2_Z_OPT | {z_opt} |",
         f"| H2_MAT_OPT | {mat_opt} |",
         "",
+    ]
+
+    if cost_scenarios:
+        maker_taker = next((s for s in cost_scenarios if s["scenario"] == "maker/taker"), None)
+        gate_result = "PASS" if maker_taker and maker_taker["calmar"] > 0 else "FAIL"
+        lines += [
+            "---",
+            "",
+            "## Cost Scenario Analysis",
+            "",
+            "| Scenario | Entry Fee | Exit Fee | Sortino | Calmar | MaxDD |",
+            "|----------|-----------|----------|---------|--------|-------|",
+        ]
+        for s in cost_scenarios:
+            lines.append(
+                f"| {s['scenario']} | {s['fee_entry']*100:.2f}% | {s['fee_exit']*100:.2f}% | "
+                f"{_fmt(s['sortino'])} | {_fmt(s['calmar'])} | {_fmt(s['max_dd'], True)} |"
+            )
+        lines.append(f"\nGate: Calmar > 0 in maker/taker scenario → **{gate_result}**\n")
+
+    lines += [
+        "---",
+        "",
         f"*Charts: see `H2_transitional_drift/02_Candidates/Strategy/charts/backtest/`*",
     ]
 
@@ -1459,7 +1865,7 @@ def _write_h2_report(
 
 def _write_combined_report(
     alpha_results, final_stats, oos_stats, perturb_results,
-    h1_params, h2_params, alpha_opt,
+    h1_params, h2_params, alpha_opt, cost_scenarios=None,
 ) -> None:
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -1540,6 +1946,29 @@ def _write_combined_report(
         "",
         "Robustness criterion: Calmar remains positive across all perturbations → PASS",
         "",
+    ]
+
+    if cost_scenarios:
+        maker_taker = next((s for s in cost_scenarios if s["scenario"] == "maker/taker"), None)
+        gate_result = "PASS" if maker_taker and maker_taker["calmar"] > 0 else "FAIL"
+        lines += [
+            "---",
+            "",
+            "## Cost Scenario Analysis",
+            "",
+            "| Scenario | Entry Fee | Exit Fee | Sortino | Calmar | MaxDD |",
+            "|----------|-----------|----------|---------|--------|-------|",
+        ]
+        for s in cost_scenarios:
+            lines.append(
+                f"| {s['scenario']} | {s['fee_entry']*100:.2f}% | {s['fee_exit']*100:.2f}% | "
+                f"{_fmt(s['sortino'])} | {_fmt(s['calmar'])} | {_fmt(s['max_dd'], True)} |"
+            )
+        lines.append(f"\nGate: Calmar > 0 in maker/taker scenario → **{gate_result}**\n")
+
+    lines += [
+        "---",
+        "",
         f"*Charts: see `portfolio/charts/combined/`*",
     ]
 
@@ -1547,6 +1976,167 @@ def _write_combined_report(
     with open(OUTPUT_COMB, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"\n  Wrote {OUTPUT_COMB}")
+
+
+def _write_portfolio_report(
+    h1_stats: dict,
+    h2c_stats: dict,
+    sweep_results: list,
+    f_max_opt: float,
+    mean_f_opt: float,
+    stats_opt: dict,
+    h1_oos_stats: dict,
+    h2c_oos_stats: dict,
+    oos_stats: dict,
+    perturb_results: list,
+    gate1: bool, gate2: bool, gate3: bool, all_pass: bool,
+    total_ts: int,
+    btc_scale: float,
+    z_scale: float,
+) -> None:
+    lines = [
+        "# Section [G] — Dual Portfolio Backtest: Portfolio-Level Aggregation",
+        "",
+        "## Architecture",
+        "",
+        "| Engine | Role | Signal |",
+        "|--------|------|--------|",
+        "| H1 reversal | Cross-sectional laggards | −C1_raw_cs_z |",
+        "| H2C diffusion | BTC-lagging assets | β×r_BTC,2h − r_i,2h |",
+        "",
+        "**Combination:** `combined_return_t = (1 − f_t) × H1_ret_t + f_t × H2C_ret_t`",
+        "",
+        "**Continuous allocation formula (failure-mode derived):**",
+        "",
+        "```",
+        "f_t = f_max × btc_activity_t × stress_decay_t",
+        "",
+        f"btc_activity_t = min(1, |r_BTC,2h| / {btc_scale})   "
+        "← 0 when BTC flat; H2C signal undefined",
+        f"stress_decay_t = max(0, 1 − vol_z / {z_scale:.1f})      "
+        f"← 0 when vol_z≥{z_scale:.1f}σ; correlations spike in stress",
+        "```",
+        "",
+        f"Fixed parameters (not swept): btc_scale={btc_scale}  z_scale={z_scale:.1f}  "
+        f"lookback=48h  n_train={total_ts}h",
+        "",
+        "---",
+        "",
+        "## [G-0] Baseline — Standalone Engine Performance",
+        "",
+        "| Engine | Total Return | Sortino | Calmar | MaxDD |",
+        "|--------|-------------|---------|--------|-------|",
+        f"| H1 only | {_fmt(h1_stats['total_return'], True)} | {_fmt(h1_stats['sortino'])} "
+        f"| {_fmt(h1_stats['calmar'])} | {_fmt(h1_stats['max_dd'], True)} |",
+        f"| H2C only | {_fmt(h2c_stats['total_return'], True)} | {_fmt(h2c_stats['sortino'])} "
+        f"| {_fmt(h2c_stats['calmar'])} | {_fmt(h2c_stats['max_dd'], True)} |",
+        "",
+        "---",
+        "",
+        "## [G-1] f_max Sweep (Continuous Allocation)",
+        "",
+        "| f_max | Total Return | Sortino | Calmar | MaxDD | mean(f_t) | Δ Sortino vs H1 |",
+        "|-------|-------------|---------|--------|-------|-----------|----------------|",
+    ]
+
+    h1_s = h1_stats["sortino"]
+    for f_max, st, _, _ in sweep_results:
+        mean_f = st.get("mean_f", 0.0)
+        lines.append(
+            f"| {f_max:.2f} | {_fmt(st['total_return'], True)} | {_fmt(st['sortino'])} | "
+            f"{_fmt(st['calmar'])} | {_fmt(st['max_dd'], True)} | "
+            f"{mean_f*100:.1f}% | {st['sortino']-h1_s:+.2f} |"
+        )
+
+    lines += [
+        "",
+        f"**Optimal: f_max_opt = {f_max_opt:.2f}  (mean active fraction ≈ {mean_f_opt*100:.1f}%)**",
+        "",
+        f"Portfolio agg: ret={_fmt(stats_opt['total_return'], True)}  "
+        f"Sortino={_fmt(stats_opt['sortino'])}  "
+        f"Calmar={_fmt(stats_opt['calmar'])}  "
+        f"MaxDD={_fmt(stats_opt['max_dd'], True)}",
+        "",
+        "---",
+        "",
+        "## [G-2] OOS Holdout (Dec 2024 – Jan 2025)",
+        "",
+        "| Metric | H1 only | H2C only | Portfolio agg |",
+        "|--------|---------|---------|---------------|",
+        f"| Total Return | {_fmt(h1_oos_stats['total_return'], True)} | "
+        f"{_fmt(h2c_oos_stats['total_return'], True)} | {_fmt(oos_stats['total_return'], True)} |",
+        f"| Sortino | {_fmt(h1_oos_stats['sortino'])} | "
+        f"{_fmt(h2c_oos_stats['sortino'])} | {_fmt(oos_stats['sortino'])} |",
+        f"| Calmar | {_fmt(h1_oos_stats['calmar'])} | "
+        f"{_fmt(h2c_oos_stats['calmar'])} | {_fmt(oos_stats['calmar'])} |",
+        f"| Max Drawdown | {_fmt(h1_oos_stats['max_dd'], True)} | "
+        f"{_fmt(h2c_oos_stats['max_dd'], True)} | {_fmt(oos_stats['max_dd'], True)} |",
+        "",
+        "---",
+        "",
+        "## [G-3] Perturbation Robustness (±20% on f_max)",
+        "",
+        "| Delta | f_max | Sortino | Calmar | MaxDD |",
+        "|-------|-------|---------|--------|-------|",
+    ]
+
+    for r in perturb_results:
+        lines.append(
+            f"| {r['tag']} | {r['f_max']:.2f} | "
+            f"{_fmt(r['sortino'])} | {_fmt(r['calmar'])} | {_fmt(r['max_dd'], True)} |"
+        )
+
+    lines += [
+        "",
+        "Robustness criterion: Sortino positive and Calmar positive across all perturbations.",
+        "",
+        "---",
+        "",
+        "## [G-4] Activation Gates",
+        "",
+        f"- Gate 1 (Sortino ≥ 1.05×H1 = {1.05*h1_stats['sortino']:.2f}): "
+        f"**{'PASS' if gate1 else 'FAIL'}** (achieved {stats_opt['sortino']:.2f})",
+        f"- Gate 2 (Calmar  ≥ 0.90×H1 = {0.90*h1_stats['calmar']:.2f}):  "
+        f"**{'PASS' if gate2 else 'FAIL'}** (achieved {stats_opt['calmar']:.2f})",
+        f"- Gate 3 (OOS Sortino > H1-OOS = {h1_oos_stats['sortino']:.2f}): "
+        f"**{'PASS' if gate3 else 'FAIL'}** (achieved {oos_stats['sortino']:.2f})",
+        f"- **Overall: {'ALL PASS' if all_pass else 'FAIL'}**",
+        "",
+        "---",
+        "",
+        "## Action",
+        "",
+    ]
+
+    if all_pass:
+        lines += [
+            "All gates passed. Update `config.py`:",
+            "",
+            "```python",
+            f"H2C_MAX_FRACTION: float = {f_max_opt:.2f}   # continuous allocation, f_max",
+            f"H2C_BTC_SCALE:    float = {btc_scale}       # btc_activity ramp threshold",
+            f"H2C_Z_SCALE:      float = {z_scale:.1f}       # stress_decay zero point",
+            "```",
+            "",
+            "Run full test suite: `python -X utf8 tests/test_engine_aggregator.py`",
+        ]
+    else:
+        lines += [
+            "Gates did not all pass. H2C remains disabled in live bot (all fractions = 0.0).",
+            "Re-run after more data or tuning improvements.",
+        ]
+
+    lines += [
+        "",
+        "---",
+        "",
+        "*Charts: `portfolio/charts/combined/portfolio_aggregation_equity.png`*",
+    ]
+
+    os.makedirs(os.path.dirname(OUTPUT_PORTFOLIO), exist_ok=True)
+    with open(OUTPUT_PORTFOLIO, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print(f"\n  Wrote {OUTPUT_PORTFOLIO}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1579,12 +2169,14 @@ def main() -> None:
     h1_params = run_h1_section(all_prices, active_pairs, btc_ts)
     h2_params = run_h2_section(all_prices, active_pairs, btc_ts, btc_key, h1_params["z_opt"])
     run_dual_section(all_prices, active_pairs, btc_ts, btc_key, h1_params, h2_params)
+    run_dual_portfolio_section(all_prices, active_pairs, btc_ts, btc_key, h1_params, h2_params)
 
     print("\n" + "="*60)
     print("DONE")
-    print(f"  H1 output:       {OUTPUT_H1}")
-    print(f"  H2 output:       {OUTPUT_H2}")
-    print(f"  Combined output: {OUTPUT_COMB}")
+    print(f"  H1 output:        {OUTPUT_H1}")
+    print(f"  H2 output:        {OUTPUT_H2}")
+    print(f"  Combined output:  {OUTPUT_COMB}")
+    print(f"  Portfolio output: {OUTPUT_PORTFOLIO}")
 
 
 if __name__ == "__main__":

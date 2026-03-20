@@ -22,7 +22,7 @@ Requires:
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from dotenv import load_dotenv
 
@@ -44,8 +44,10 @@ from bot.risk.kill_switch import (
     execute_emergency_exit,
     per_position_stop_check,
 )
+from bot.strategy.engine_aggregator import aggregate_engine_portfolios
+from bot.strategy.h2_signals import BetaHistoryManager, compute_h2c_scores
 from bot.strategy.maturity import compute_all_maturity
-from bot.strategy.ranking import rank_assets, should_exit
+from bot.strategy.ranking import rank_assets, rank_h2c_assets, should_exit
 from bot.strategy.regime import RegimeEngine, RegimeState
 from bot.strategy.signals import compute_c1_scores
 
@@ -133,10 +135,27 @@ def run() -> None:
     tradable_pairs = list(exchange_info.get("TradePairs", {}).keys())
     logger.info("Tradable pairs: %d", len(tradable_pairs))
 
+    # ── H2C beta history (maintains readiness even when alpha=0) ──────────────
+    btc_key      = "BTCUSDT"
+    beta_manager = BetaHistoryManager.from_dict(
+        saved.get("beta_hist", {}) if saved else {},
+        tradable_pairs, btc_key,
+    )
+    burn_in_remaining = max(
+        0,
+        config.H2C_BETA_MIN_OBS - beta_manager.min_observations(),
+    )
+    logger.info(
+        "H2C engine: f_max=%.2f btc_scale=%.3f z_scale=%.1f — %s",
+        config.H2C_MAX_FRACTION, config.H2C_BTC_SCALE, config.H2C_Z_SCALE,
+        f"{burn_in_remaining}h burn-in remaining" if burn_in_remaining > 0 else "ready",
+    )
+
     # ── Main loop variables ────────────────────────────────────────────────────
     loop_count = 0
     signal_phase = 0   # 0=pre-warmup, 1=restricted(r_30m+r_24h only), 2=partial(+r_2h), 3=full(+r_6h)
     prices_for_nav: Dict[str, float] = {}
+    h2c_positions: Set[str] = set()  # Pairs currently held via H2C engine
 
     # ── Main loop ──────────────────────────────────────────────────────────────
     while True:
@@ -221,7 +240,7 @@ def run() -> None:
 
             if signal_phase == 0:
                 logger.info("Pre-warmup: %d/%d min samples. Waiting.", min_samples, config.WARMUP_MIN_SAMPLES)
-                _persist_and_sleep(constraints, loop_start)
+                _persist_and_sleep(constraints, loop_start, beta_manager, drawdown_tracker)
                 continue
 
             # ── f. Fetch external signals (funding rates + Fear & Greed) ──────
@@ -232,9 +251,20 @@ def run() -> None:
             asset_features, cs = build_all_features(cache, tradable_pairs, funding_rates)
 
             # ── h. Compute regime → λ_t ────────────────────────────────────────
+            # Dominance cascade (LSI overrides all — collapses to near-zero in stress):
+            #   LSI > 0.80 → HAZARD_DEFENSIVE λ=10.0 (exp(−10)≈0 — emergency shutdown)
+            #   LSI > 0.60 → HAZARD_DEFENSIVE λ=4.0  (exp(−4)≈0.018 — effectively zero)
+            #   LSI > 0.40 OR MPI < 0.30 → NEUTRAL_MIXED λ=1.5  (caution / chop)
+            #   FEI > 0.55 AND MPI > 0.50 → TREND_SUPPORTIVE λ=0.3
+            #   else → NEUTRAL_MIXED λ=0.8
+            # Full specification: docs/STRATEGY.md — "λ_t — Market Hazard Rate"
             regime, lambda_t = regime_engine.compute(asset_features, cs, fng_value=fng_value)
 
             # ── i. Kill switch: emergency exit checks ─────────────────────────
+            # Three independent emergency layers (any can trigger alone):
+            #   1. Portfolio drawdown −12% → exit all, block until recovery to −8%
+            #   2. BTC 2h return < −6% → exit all;  < −3% → block new entries
+            #   3. Regime HAZARD_DEFENSIVE → block all new entries
             block_entries = False
 
             # Kill switch 1: Portfolio drawdown
@@ -247,6 +277,7 @@ def run() -> None:
                     for pair in list(current_positions.keys()):
                         constraints.record_exit(pair)
                     current_positions = {}
+                    h2c_positions.clear()
                 block_entries = True
 
             # Kill switch 2: BTC gate
@@ -256,6 +287,7 @@ def run() -> None:
                 for pair in list(current_positions.keys()):
                     constraints.record_exit(pair)
                 current_positions = {}
+                h2c_positions.clear()
             if btc_block:
                 block_entries = True
                 logger.info("BTC gate blocking new entries: %s", btc_reason)
@@ -282,6 +314,7 @@ def run() -> None:
                     logger.info("Stop triggered for %s: %s", pair, stop_reason)
                     order_manager.place_market_order(pair, "SELL", rec.qty, reason=stop_reason)
                     constraints.record_exit(pair)
+                    h2c_positions.discard(pair)
                     continue
 
                 # Force exit: max hold time exceeded
@@ -290,12 +323,41 @@ def run() -> None:
                     logger.info("Force exit %s: %s", pair, force_reason)
                     order_manager.place_market_order(pair, "SELL", rec.qty, reason=force_reason)
                     constraints.record_exit(pair)
+                    h2c_positions.discard(pair)
                     continue
 
-            # ── k. Compute C1, M_t, ranking ────────────────────────────────────
-            c1_scores = compute_c1_scores(asset_features, cs)
-            maturity = compute_all_maturity(asset_features)
-            ranked = rank_assets(c1_scores, maturity, lambda_t, regime)
+                # H2C-specific exits: hold cap (6h) and BTC reversal
+                if pair in h2c_positions:
+                    _btc_live = asset_features.get(btc_key)
+                    _btc_r2h_live = _btc_live.r_2h if _btc_live else None
+                    h2c_exit = False
+                    h2c_exit_reason = ""
+                    if rec.age_hours() >= config.H2C_MAX_HOLD_HOURS:
+                        h2c_exit = True
+                        h2c_exit_reason = f"H2C hold cap {config.H2C_MAX_HOLD_HOURS:.0f}h"
+                    elif _btc_r2h_live is not None and _btc_r2h_live < config.H2C_BTC_REV_EXIT:
+                        h2c_exit = True
+                        h2c_exit_reason = f"H2C BTC reversal {_btc_r2h_live:.3f}"
+                    if h2c_exit:
+                        logger.info("H2C force exit %s: %s", pair, h2c_exit_reason)
+                        order_manager.place_market_order(pair, "SELL", rec.qty, reason=h2c_exit_reason)
+                        constraints.record_exit(pair)
+                        h2c_positions.discard(pair)
+                        continue
+
+            # ── k. Compute signals, rank and allocate per engine ───────────────
+
+            # H1 Engine — always active
+            h1_scores = compute_c1_scores(asset_features, cs)
+            maturity  = compute_all_maturity(asset_features)
+            ranked    = rank_assets(h1_scores, maturity, lambda_t, regime)
+
+            # H2C Engine — update beta history every loop (burn-in begins at
+            # startup so H2C is ready when capital_fraction > 0 is set)
+            beta_manager.update(cache, int(time.time() * 1000))
+
+            # c1_scores alias for exit checks and logging (H1 signal drives exits)
+            c1_scores = h1_scores
 
             # ── l. Process signal-based exits ─────────────────────────────────
             current_positions = {pair: rec.qty for pair, rec in constraints.all_positions().items()}
@@ -316,6 +378,7 @@ def run() -> None:
                                 reason=exit_reason,
                             )
                             constraints.record_exit(pair)
+                            h2c_positions.discard(pair)
                     else:
                         logger.debug("Exit blocked for %s: %s", pair, hold_reason)
 
@@ -347,9 +410,33 @@ def run() -> None:
                     gross_override = min(dd_gross_override if dd_gross_override else phase_gross_cap, phase_gross_cap)
                 else:
                     gross_override = dd_gross_override
-                target_weights = compute_target_weights(
-                    phase_ranked, asset_features, regime, gross_override
-                )
+
+                # H1 target weights
+                h1_weights = compute_target_weights(phase_ranked, regime, gross_override)
+
+                # H2C Engine — continuous regime allocation (failure-mode derived)
+                # f_t = f_max × btc_activity × stress_decay
+                # btc_activity: 0 when BTC flat, ramps to 1 at H2C_BTC_SCALE move
+                # stress_decay: 1 when calm, decays to 0 at vol_z = H2C_Z_SCALE
+                h2c_weights: Dict[str, float] = {}
+                h2c_target_pairs: set = set()
+                h2c_capital_fraction = 0.0
+                btc_feat = asset_features.get(btc_key)
+                btc_r2h  = btc_feat.r_2h if btc_feat else None
+                if btc_r2h is not None and config.H2C_MAX_FRACTION > 0.0:
+                    btc_activity = min(1.0, abs(btc_r2h) / config.H2C_BTC_SCALE) if config.H2C_BTC_SCALE > 0 else 0.0
+                    vol_z        = regime_engine.last_btc_vol_z
+                    stress_decay = max(0.0, 1.0 - vol_z / config.H2C_Z_SCALE) if config.H2C_Z_SCALE > 0 else 0.0
+                    h2c_capital_fraction = config.H2C_MAX_FRACTION * btc_activity * stress_decay
+                    if h2c_capital_fraction > 0.01:
+                        h2c_scores = compute_h2c_scores(asset_features, beta_manager, btc_r2h)
+                        if h2c_scores is not None:
+                            h2c_ranked  = rank_h2c_assets(h2c_scores, regime)
+                            h2c_weights = compute_target_weights(h2c_ranked, regime, gross_override)
+                            h2c_target_pairs = set(h2c_weights.keys())
+
+                # Portfolio aggregation — combine engines at weight level before execution
+                target_weights = aggregate_engine_portfolios(h1_weights, h2c_weights, h2c_capital_fraction)
                 target_usd = weights_to_usd(target_weights, drawdown_tracker.current_nav)
 
                 # Process entries for assets not already held
@@ -385,11 +472,13 @@ def run() -> None:
                         # Record entry at limit price for stop calculations
                         qty_estimate = target_value / snap.last_price
                         constraints.record_entry(pair, snap.last_price, qty_estimate)
+                        if pair in h2c_target_pairs:
+                            h2c_positions.add(pair)
                         usd_free -= target_value  # Track available budget
 
             # ── n. Persist state ──────────────────────────────────────────────
             _persist_and_log(
-                constraints, dd_state, regime, lambda_t,
+                constraints, beta_manager, dd_state, regime, lambda_t,
                 c1_scores, maturity, loop_count, signal_phase,
                 fng_value=fng_value,
                 drawdown_tracker=drawdown_tracker,
@@ -418,6 +507,7 @@ def _persist_and_sleep(constraints: ConstraintEngine, loop_start: float, drawdow
 
 def _persist_and_log(
     constraints: ConstraintEngine,
+    beta_manager: "BetaHistoryManager",
     dd_state: Any,
     regime: RegimeState,
     lambda_t: float,

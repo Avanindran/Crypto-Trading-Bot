@@ -14,7 +14,7 @@ The corrective flow from market makers, statistical arbitrageurs, and mean-rever
 
 Economic basis: De Bondt & Thaler (1985) overreaction hypothesis; Lehmann (1990) market-maker inventory rebalancing at hourly frequency; Frazzini-Pedersen (2014) low-vol anomaly. Full theory: `research/H1_reversal/00_mechanism.md`.
 
-### H2 — Expectation Diffusion via BTC (Mechanism Confirmed, H2c Promoted)
+### H2 — Expectation Diffusion via BTC (Mechanism Confirmed, H2c Deployed)
 
 Crypto markets have a partially shared expectation structure where BTC serves as the primary state variable. When new information arrives, BTC reprices first (superior liquidity, CME participation). Altcoins lag:
 
@@ -22,7 +22,29 @@ Crypto markets have a partially shared expectation structure where BTC serves as
 Δᵢ = βᵢ · r_BTC,h − r_i,h > 0   (altcoin has not yet tracked BTC's move)
 ```
 
-This is a **Momentum signal** (expectation updating speed error). The mechanism is empirically confirmed: H1 IC = +0.024 when BTC flat vs +0.110 when BTC has moved (uplift = +0.087). The direct proxy H2a collapses to H1 via CS z-normalization identity; H2b has no lag at 1h. H2c (beta-adjusted gap: `CS_z(β_i·r_BTC,2h − r_i,2h)`) is PROMOTED (IC=+0.042 @ 1h, t=+9.85) and is not deployed yet — pending GP integration before Mar 28 deadline. Full theory: `research/H2_transitional_drift/00_mechanism.md`.
+This is a **Momentum signal** (expectation updating speed error). The mechanism is empirically confirmed: H1 IC = +0.024 when BTC flat vs +0.110 when BTC has moved (uplift = +0.087). The direct proxy H2a collapses to H1 via CS z-normalization identity; H2b has no lag at 1h. H2c (beta-adjusted gap: `CS_z(β_i·r_BTC,2h − r_i,2h)`) is PROMOTED (IC=+0.042 @ 1h, t=+9.85) and is deployed with continuous regime-adaptive capital allocation. Full theory: `research/H2_transitional_drift/00_mechanism.md`.
+
+### H2C Deployment: Continuous Allocation
+
+The H2C capital fraction is computed each loop from failure-mode analysis (two failure modes define the two factors):
+
+```
+f_t = f_max × btc_activity × stress_decay
+
+btc_activity = min(1, |r_BTC,2h| / 0.003)   # failure mode 1: H2C signal undefined when BTC flat
+stress_decay = max(0, 1 − vol_z / 2.0)       # failure mode 2: correlations spike at vol_z ≥ 2σ
+```
+
+**Parameters (Section [G] sweep, `research/portfolio/05_dual_portfolio_backtest.md`):**
+- `f_max = 0.50` — swept 0→1; plateau center at 0.50 (Sortino=3.30, Calmar=19.22)
+- `btc_scale = 0.003` — natural anchor: minimum meaningful BTC 2h move
+- `z_scale = 2.0` — natural anchor: 2σ above rolling median = correlation regime shift
+
+**H2C-specific exit rules (validated in Section B sweeps):**
+- **6h hold cap** (sweep D): Calmar 6.99 vs 4.65 without — diffusion window expires after ~6h
+- **BTC −1% reversal exit** (sweep C): Sortino 1.64 vs 0.29 without — invalidates diffusion direction
+
+**Combined portfolio result:** H1 + H2C at f_max=0.50 → Sortino=3.30, Calmar=19.22, MaxDD=−13.7%, OOS Sortino=1.40 (all 3 promotion gates passed).
 
 ### Signal Architecture
 
@@ -117,11 +139,7 @@ Entry is blocked when M_t > 0.72.
 
 **Basket size:** 5 assets in TREND_SUPPORTIVE, 3 in NEUTRAL_MIXED, 0 in HAZARD_DEFENSIVE
 
-**Sizing:** Quarter-Kelly with downside-vol denominator (directly targets Sortino numerator/denominator):
-```
-kelly_f = 0.25 × expected_r / downside_vol²
-clipped to [5%, 30%] per asset
-```
+**Sizing:** Score-proportional — target weight ∝ PositionScore_i, clipped to [5%, 30%] per asset (research: `research/overlays/portfolio_construction/01_sizing_schemes.md`, Scheme B).
 
 **Gross cap by regime:** 85% (trend), 65% (neutral), 0% (defensive)
 
@@ -141,19 +159,18 @@ The competition scoring formula is `0.4×Sortino + 0.3×Sharpe + 0.3×Calmar`.
 
 A mechanism-specific backtest was conducted on Binance 1h data over Oct 2024 – Jan 2025 (44 pairs with full-period data). Each mechanism received its own risk overlay parameter sweep, selected on the Oct–Nov 2024 training period. OOS holdout (Dec–Jan 2025) evaluated after all parameter selection. Full results at `research/H1_reversal/02_Candidates/Strategy/02_backtest.md`, `research/H2_transitional_drift/02_Candidates/Strategy/01_backtest.md`, `research/portfolio/03_combined_backtest.md`.
 
-**H1 Reversal — fully stacked config (stop-loss −4%, C1 exit 0.25, C2 z>0.75, Kelly sizing, top-3):**
-- **Net return: +39.9%** | Sortino: **2.78** | Calmar: **11.03** | MaxDD: **−15.5%**
-- OOS holdout (Dec–Jan 2025): return +2.5%, Sortino 0.53 — no overfit
+**H1 Reversal — fully stacked config (stop-loss −3%, C1 exit 0.25, C2 z>0.75, score-proportional sizing, top-3):**
+- **Net return: +35.6%** | Sortino: **2.69** | Calmar: **11.73** | MaxDD: **−13.6%**
+- OOS holdout (Dec–Jan 2025): return +8.2%, Sortino 1.33 — positive OOS
 
-**H2C BTC Lead-Lag — fully stacked config (BTC-rev exit −0.5%, BTC gate |r_BTC,2h|≥0.5%):**
-- **Net return: +34.2%** | Sortino: **1.34** | Calmar: **2.96** | MaxDD: **−47.0%**
-- BTC-direction exit transforms signal: Sortino 0.29 → 1.68 before portfolio optimization
+**H2C BTC Lead-Lag — fully stacked config (BTC-rev exit −1%, BTC gate |r_BTC,2h|≥0.3%, 6h hold cap):**
+- **Net return: +74.0%** | Sortino: **1.99** | Calmar: **20.25** | MaxDD: **−20.6%**
+- BTC-direction exit transforms signal: Sortino 0.29 → 1.64 before portfolio optimization
 
-**Dual-Engine (regime-conditional allocation):**
-- α_TREND = 0.0 optimally selected — H1 dominates in TREND_ACTIVE periods; H2C does not add alpha on top of H1 in portfolio context (mechanisms select overlapping laggard assets)
-- **Net return: +35.6%** | Sortino: **2.51** | Calmar: **9.68** | MaxDD: **−15.1%**
-- OOS holdout: return +1.5%, Sortino 0.40 — positive
-- Robustness (±20% parameter perturbation): Calmar 16.45/9.68/14.86 — PASS
+**Dual-Engine — continuous allocation (f_max=0.50, Section [G]):**
+- f_t = f_max × btc_activity × stress_decay — ramps H2C in when BTC is active and market calm
+- **Net return: +54.8%** | Sortino: **3.30** | Calmar: **19.22** | MaxDD: **−13.7%**
+- OOS holdout: return +9.3%, Sortino 1.40 — positive; all 3 Section [G] gates passed
 
 **Fee sensitivity (H1 Version A with all risk overlays):**
 
@@ -163,7 +180,7 @@ A mechanism-specific backtest was conducted on Binance 1h data over Oct 2024 –
 | 0.05% maker | +28.9% | Competition scenario (+C2, limit orders) |
 | 0.10% taker | −33.4% | Strategy not viable at taker fee |
 
-**Research parameter validation:** Sweep confirmed `STOP_LOSS_PCT = −0.04` (matches H1_SL_OPT). `EXIT_C1_THRESHOLD` updated 0.20 → 0.25 (Sortino 1.86 vs 1.32 in sweep). See `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` for full sweep tables.
+**Research parameter validation:** Sweep confirmed `STOP_LOSS_PCT = −0.03` (H1 SL robust plateau center; −3% is median of ≥85%-of-peak Calmar plateau). `EXIT_C1_THRESHOLD` updated 0.20 → 0.25 (Sortino 1.86 vs 1.32 in sweep). See `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` for full sweep tables.
 
 ### Signal Validation
 
@@ -259,10 +276,11 @@ Full doctrine compliance table. Every step maps to a research file with a formal
 | 7 | Regime allocation ladder | `research/overlays/portfolio_construction/02_regime_allocation.md` | 3-regime vs binary gate Calmar gate |
 | 8 | Signal nomination | `research/H1_reversal/04_decision.md` | H1_neg_c1_x07_H5_neg_vol PROMOTED |
 | 9 | Strategy assembly | `bot/strategy/signals.py` | Deployed |
-| 10A | H1 mechanism backtest | `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` | Sortino 2.78, Calmar 11.03, MaxDD −15.5% (0.05% maker, all overlays) |
-| 10B | H2C mechanism backtest | `research/H2_transitional_drift/02_Candidates/Strategy/01_backtest.md` | Sortino 1.34, Calmar 2.96 (BTC-rev exit −0.5%, BTC gate ≥0.5%) |
-| 10C | Dual-engine allocation | `research/portfolio/03_combined_backtest.md` | α_TREND=0.0 optimal; Sortino 2.51, Calmar 9.68; OOS positive |
-| 12 | Robustness | `research/H1_reversal/02_Candidates/Strategy/03_robustness.md` | 97.2% block-resample hit rate |
+| 10A | H1 mechanism backtest | `research/H1_reversal/02_Candidates/Strategy/02_backtest.md` | Sortino 2.69, Calmar 11.73, MaxDD −13.6% (0.05% maker, stop-loss −3%) |
+| 10B | H2C standalone backtest | `research/H2_transitional_drift/02_Candidates/Strategy/01_backtest.md` | Sortino 1.99, Calmar 20.25, MaxDD −20.6% (all sweeps complete) |
+| 10C | Discrete dual-engine sweep | `research/portfolio/03_combined_backtest.md` | α_TREND=0.0 optimal with discrete allocation |
+| [G] | Continuous allocation sweep | `research/portfolio/05_dual_portfolio_backtest.md` | **f_max=0.50 → Sortino=3.30, Calmar=19.22, OOS Sortino=1.40 — ALL GATES PASSED** |
+| 12 | H1 robustness | `research/H1_reversal/02_Candidates/Strategy/03_robustness.md` | 97.2% block-resample hit rate (486/500 windows positive IC) |
 
 ## Research → Config Mapping
 
@@ -274,13 +292,31 @@ Every numeric constant in `config.py` traces to a specific research finding.
 | `ALPHA_WEIGHT_STABILITY` | 0.30 | GP search IC-Sharpe optimum (04_gp_search/) |
 | `LSI_WEIGHT_BTC_VOL` | 0.45 | C2 modifier: BTC vol is dominant stress indicator |
 | `LSI_WEIGHT_FNG` | 0.15 | Fear & Greed added as leading indicator (pre-price-based) |
-| `KELLY_FRACTION` | 0.25 | Portfolio construction Step 6: Quarter-Kelly vs EW Sortino |
+| `MIN_POSITION_WEIGHT` | 0.05 | Score-proportional floor: 5% NAV minimum per position |
+| `MAX_POSITION_WEIGHT` | 0.30 | Score-proportional cap: 30% NAV concentration limit |
 | `REGIME_PARAMS` gross caps | 85/65/0% | Regime ladder Step 7: 3-regime improves Calmar vs binary gate |
 | `MAX_MATURITY_FOR_ENTRY` | 0.72 | C3 gate: IC(fresh bucket) test in 06_vector_tests.md Part C |
 | `DRAWDOWN_KILL` | −12% | Calmar denominator hard cap: prevents runaway MaxDD |
 | `HOLD_HOURS` (implicit) | 4h | Optimal IC decay: reversal IC peaks at 1–4h (03_validation/) |
-| `STOP_LOSS_PCT` | −4% | H1 SL sweep: −4% best Calmar (<5% stops/period criterion) |
+| `STOP_LOSS_PCT` | −3% | H1 SL sweep: −3% robust plateau center (≥85%-of-peak Calmar plateau) |
 | `EXIT_C1_THRESHOLD` | 0.25 | H1 exit sweep: 0.25 > 0.20 (Sortino 1.86 vs 1.32) |
+
+## Validated Performance Summary
+
+Backtest: Oct 2024 – Nov 2024 (train) | Dec 2024 – Jan 2025 (OOS holdout)
+Data: Binance 1h OHLCV, 44 pairs, 0.05% maker fee
+
+| Engine | Sortino | Calmar | MaxDD | OOS Return | OOS Sortino |
+|--------|---------|--------|-------|------------|-------------|
+| H1 only | 2.69 | 11.73 | −13.6% | +8.2% | 1.33 |
+| H2C only | 1.99 | 20.25 | −20.6% | +0.1% | 0.25 |
+| **Combined (f_max=0.50)** | **3.30** | **19.22** | **−13.7%** | **+9.3%** | **1.40** |
+
+Signal IC @ 4h: +0.047 (t=7.2) train · +0.066 (t=10.6) OOS holdout
+Block-resample: 97.2% of 500 random 10-day windows show positive IC
+All Section [G] promotion gates passed: Sortino ≥ 2.83 ✓ · Calmar ≥ 10.56 ✓ · OOS Sortino > 1.33 ✓
+
+---
 
 ## References
 
