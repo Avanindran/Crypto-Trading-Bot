@@ -18,7 +18,7 @@ LOOP_INTERVAL_SECONDS: int = 60     # Main loop cadence (1 call/min for ticker)
 # ──────────────────────────────────────────────────────────
 # DATA / WARMUP
 # ──────────────────────────────────────────────────────────
-CACHE_MAXLEN: int = 300             # 300 snapshots ≈ 5 h at 1-min polling
+CACHE_MAXLEN: int = 400             # 300 snapshots ≈ 5 h at 1-min polling
 MIN_PERIODS_FOR_FEATURES: int = 30  # Minimum snapshots to compute any feature (r_30m needs 30)
 
 # Staged warmup thresholds (based on which return windows become available):
@@ -100,8 +100,8 @@ LSI_WEIGHT_FNG: float = 0.15        # Fear & Greed Index — extreme greed → l
 # Fear & Greed fetch cadence
 FNG_REFRESH_HOURS: float = 24.0     # Refresh at most once per day (index updates daily)
 LSI_LOOKBACK_PERIODS: int = 48      # 48h rolling window for LSI z-scores
-LSI_THRESHOLD_DEFENSIVE: float = 0.60   # LSI > 0.60 → HAZARD_DEFENSIVE, λ_t = 4.0
-LSI_THRESHOLD_EMERGENCY: float = 0.80   # LSI > 0.80 → HAZARD_DEFENSIVE, λ_t = 10.0
+LSI_THRESHOLD_DEFENSIVE: float = 9.99   # LSI > 0.60 → HAZARD_DEFENSIVE, λ_t = 4.0
+LSI_THRESHOLD_EMERGENCY: float = 9.99   # LSI > 0.80 → HAZARD_DEFENSIVE, λ_t = 10.0
 LSI_THRESHOLD_CAUTION: float = 0.40     # LSI > 0.40 → force NEUTRAL_MIXED
 
 # MPI — Market Posture Index (trend vs chop)
@@ -127,7 +127,7 @@ REGIME_PARAMS: Dict[str, dict] = {
     "NEUTRAL_MIXED": {
         "max_positions": 3,
         "gross_cap": 0.65,
-        "entry_c1_threshold": 1.00,  # Tighter: top ~15%
+        "entry_c1_threshold": 0.60,  # Tighter: top ~15%
         "lambda_t": 0.80,
     },
     "HAZARD_DEFENSIVE": {
@@ -203,6 +203,12 @@ H2C_BETA_MIN_OBS:      int   = 24    # Min observations before beta is usable
 # H2C exit rules — validated in backtest sweeps:
 H2C_MAX_HOLD_HOURS: float = 6.0   # Sweep D: HC=6 → Calmar=6.99 vs HC=None → Calmar=4.65 vs HC=12 → Calmar=0.29
 H2C_BTC_REV_EXIT:   float = -0.01 # Sweep C: BTCREV=-0.01 → Sortino=1.64 vs None → Sortino=0.29
+
+# ──────────────────────────────────────────────────────────
+# H9 VWAP-Anchored Volume Momentum parameters
+# ──────────────────────────────────────────────────────────
+H9_VWAP_LOOKBACK_HOURS: float = 24.0            # VWAP calculation window
+H9_VOLUME_SURGE_HOURS: float = 4.0              # Volume surge calculation window
 
 # ──────────────────────────────────────────────────────────
 # Execution
