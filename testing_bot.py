@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class VWAPMomentumBot:
-    """Standalone VWAP momentum trading bot with dynamic sizing and whipsaw protection"""
+    """Standalone VWAP momentum trading bot with dynamic sizing, whipsaw protection, and state recovery"""
     
     def __init__(self):
         """Initialize the bot with API credentials and configuration"""
@@ -312,6 +312,67 @@ class VWAPMomentumBot:
             position["high_price"] = current_price
         
         return False
+        
+    def _recover_state(self):
+        """Rebuilds the bot's memory of open positions after a restart."""
+        logger.info("Initiating State Recovery: Scanning exchange for orphaned bags...")
+        try:
+            # 1. Get all current balances
+            balances = self.client.get_balance()
+            
+            # 2. Get recent order history to hunt for entry prices
+            recent_orders = self.client.query_order(pending_only=False)
+            if not isinstance(recent_orders, list):
+                recent_orders = []
+                
+            recovered_count = 0
+            
+            for coin, data in balances.items():
+                if coin == "USD":
+                    continue
+                    
+                total_coin = float(data.get("Free", 0)) + float(data.get("Locked", 0))
+                
+                # Ignore zero balances or tiny crypto dust
+                if total_coin <= 0.00001:
+                    continue
+                    
+                pair = f"{coin}/USD"
+                if pair not in self.target_pairs:
+                    continue
+                    
+                # 3. Hunt backwards through history for the last BUY of this pair
+                entry_price = 0.0
+                for order in reversed(recent_orders):
+                    order_pair = order.get('TradePairId', order.get('pair', ''))
+                    order_side = str(order.get('Side', order.get('side', ''))).upper()
+                    
+                    if order_pair == pair and order_side == "BUY":
+                        entry_price = float(order.get('Price', order.get('price', 0)))
+                        break
+                        
+                # 4. Fallback: If the buy order is too old to find, use the current market price
+                if entry_price <= 0:
+                    logger.warning(f"Could not find exact entry price for {pair}. Using live price to initialize stop-loss.")
+                    ticker = self.client.get_ticker()
+                    if pair in ticker:
+                        entry_price = float(ticker[pair].get("LastPrice", 0))
+                        
+                if entry_price > 0:
+                    # 5. Inject the bag back into the bot's memory
+                    self.position_cache[pair] = {
+                        "entry_price": entry_price,
+                        "high_price": entry_price,
+                        "quantity": total_coin
+                    }
+                    recovered_count += 1
+                    logger.info(f"✅ RECOVERED: {pair} | Qty: {total_coin:.6f} | Anchor Price: ${entry_price:.2f}")
+                    
+            logger.info(f"State Recovery Complete. Rehydrated {recovered_count} active positions.")
+            
+        except Exception as e:
+            logger.error(f"Critical error during state recovery: {e}")
+            logger.warning("Bot starting with partial amnesia. Monitor positions closely.")
     
     def _update_positions(self):
         """Update position tracking and check for exits"""
@@ -381,6 +442,9 @@ class VWAPMomentumBot:
         if not self.target_pairs:
             logger.error("No target pairs available. Exiting.")
             return
+            
+        # Rebuild bot memory before starting the loop
+        self._recover_state()
         
         loop_count = 0
         
