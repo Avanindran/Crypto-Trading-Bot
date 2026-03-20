@@ -107,7 +107,13 @@ def run() -> None:
     saved = state_module.load_state()
     if saved:
         constraints.from_dict(saved.get("constraints", {}))
-        logger.info("Restored position state from disk")
+        # Restore drawdown tracker state with proper validation
+        dd_data = saved.get("drawdown_tracker", {})
+        if dd_data:
+            drawdown_tracker.from_dict(dd_data)
+            logger.info("Restored drawdown tracker state from disk")
+        else:
+            logger.info("No drawdown tracker state found - using current NAV as peak")
     else:
         logger.info("Starting with clean state")
 
@@ -386,6 +392,7 @@ def run() -> None:
                 constraints, dd_state, regime, lambda_t,
                 c1_scores, maturity, loop_count, signal_phase,
                 fng_value=fng_value,
+                drawdown_tracker=drawdown_tracker,
             )
 
         except KeyboardInterrupt:
@@ -402,9 +409,9 @@ def run() -> None:
             time.sleep(sleep_time)
 
 
-def _persist_and_sleep(constraints: ConstraintEngine, loop_start: float) -> None:
+def _persist_and_sleep(constraints: ConstraintEngine, loop_start: float, drawdown_tracker: DrawdownTracker) -> None:
     """Save state and sleep during warmup."""
-    state_module.save_state({"constraints": constraints.to_dict()})
+    state_module.save_state_with_drawdown({"constraints": constraints.to_dict()}, drawdown_tracker)
     elapsed = time.time() - loop_start
     time.sleep(max(0.0, config.LOOP_INTERVAL_SECONDS - elapsed))
 
@@ -419,10 +426,14 @@ def _persist_and_log(
     loop_count: int,
     signal_phase: int = 3,
     fng_value: Optional[float] = None,
+    drawdown_tracker: Optional[DrawdownTracker] = None,
 ) -> None:
     """Persist state and emit strategy state log entry."""
     state_data = {"constraints": constraints.to_dict()}
-    state_module.save_state(state_data)
+    if drawdown_tracker:
+        state_module.save_state_with_drawdown(state_data, drawdown_tracker)
+    else:
+        state_module.save_state(state_data)
 
     _PHASE_LABELS = {0: "pre-warmup", 1: "restricted", 2: "partial", 3: "full"}
 

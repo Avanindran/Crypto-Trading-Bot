@@ -36,6 +36,25 @@ def save_state(data: Dict[str, Any]) -> None:
         logger.warning("Failed to save state: %s", exc)
 
 
+def save_state_with_drawdown(data: Dict[str, Any], drawdown_tracker: Any) -> None:
+    """
+    Persist bot state including drawdown tracker to disk.
+    Called once per loop iteration.
+
+    Args:
+        data: State dict. Must be JSON-serializable.
+        drawdown_tracker: DrawdownTracker instance to serialize.
+    """
+    data["saved_at"] = time.time()
+    # Add drawdown tracker state
+    data["drawdown_tracker"] = drawdown_tracker.to_dict()
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.warning("Failed to save state: %s", exc)
+
+
 def load_state() -> Optional[Dict[str, Any]]:
     """
     Load state from disk if the file is fresh enough.
