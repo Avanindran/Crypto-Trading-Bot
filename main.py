@@ -221,7 +221,7 @@ def run() -> None:
 
             if signal_phase == 0:
                 logger.info("Pre-warmup: %d/%d min samples. Waiting.", min_samples, config.WARMUP_MIN_SAMPLES)
-                _persist_and_sleep(constraints, loop_start)
+                _persist_and_sleep(constraints, loop_start, drawdown_tracker)
                 continue
 
             # ── f. Fetch external signals (funding rates + Fear & Greed) ──────
