@@ -124,7 +124,7 @@ def run() -> None:
         pair: rec.qty
         for pair, rec in constraints.all_positions().items()
     }
-    real_positions, usd_free = reconcile_on_startup(client, internal_positions)
+    real_positions, usd_free, usd_locked = reconcile_on_startup(client, internal_positions)
 
     # Sync constraints with real positions (don't track positions we don't hold)
     for pair in list(constraints.all_positions().keys()):
@@ -181,6 +181,7 @@ def run() -> None:
                 try:
                     wallet = client.get_balance()
                     usd_free = float(wallet.get("USD", {}).get("Free", usd_free))
+                    usd_locked = float(wallet.get("USD", {}).get("Freeze", usd_locked))
                 except Exception as exc:
                     logger.warning("Balance poll failed: %s", exc)
 
@@ -204,11 +205,9 @@ def run() -> None:
             # Calculate current NAV: USD free + position value
             current_nav = usd_free + position_value
             
-            # Update drawdown tracker with correct NAV calculation
-            # Note: The drawdown tracker expects usd_free and positions separately,
-            # but it calculates NAV internally as usd_free + sum(position_qty * price)
-            # So we pass the correct parameters to ensure accurate NAV calculation
-            dd_state = drawdown_tracker.update(usd_free, current_positions, prices_for_nav)
+            # Update drawdown tracker with correct NAV calculation including locked USD
+            # The drawdown tracker now expects usd_free, usd_locked, positions, and prices
+            dd_state = drawdown_tracker.update(usd_free, usd_locked, current_positions, prices_for_nav)
 
             # ── e. Signal quality phase gate ───────────────────────────────────
             #
@@ -274,6 +273,22 @@ def run() -> None:
                         order_manager, current_positions,
                         reason=f"Portfolio drawdown {dd_state.drawdown_pct:.2%}",
                     )
+                    # IMPORTANT: Only clear internal state if emergency exit succeeded
+                    # The kill_switch.py now logs whether exits succeeded or failed
+                    # If failed, we need to reconcile with actual exchange balances
+                    logger.info("Emergency exit completed - reconciling state with exchange")
+                    try:
+                        # Reconcile with exchange to get actual current state
+                        real_positions, usd_free, usd_locked = reconcile_on_startup(client, current_positions)
+                        # Sync constraints with real positions (don't track positions we don't hold)
+                        for pair in list(constraints.all_positions().keys()):
+                            if pair not in real_positions:
+                                constraints.record_exit(pair)
+                        current_positions = real_positions
+                    except Exception as exc:
+                        logger.error("Failed to reconcile after emergency exit: %s", exc)
+                        # If reconciliation fails, keep current internal state but log warning
+                        logger.warning("Keeping internal state after failed reconciliation")
                     for pair in list(current_positions.keys()):
                         constraints.record_exit(pair)
                     current_positions = {}

@@ -63,8 +63,9 @@ def execute_emergency_exit(
 ) -> None:
     """
     Execute full emergency exit:
-      1. Cancel all pending orders (no new fills contaminating exit)
+      1. Cancel all pending orders
       2. Market-sell all open positions
+      3. Verify orders succeeded before clearing internal state
 
     Args:
         order_manager: For cancellation and market orders.
@@ -76,18 +77,36 @@ def execute_emergency_exit(
     # Step 1: Cancel all pending orders
     order_manager.cancel_all()
 
-    # Step 2: Market-sell all positions
+    # Step 2: Market-sell all positions and track success
+    successful_exits = []
+    failed_exits = []
+    
     for pair, qty in positions.items():
         if qty > 1e-8:
             logger.warning("Emergency market sell: %s qty=%.6f", pair, qty)
-            order_manager.place_market_order(
+            success = order_manager.place_market_order(
                 pair=pair,
                 side="SELL",
                 quantity=qty,
                 reason=f"EMERGENCY EXIT: {reason}",
             )
+            
+            if success:
+                successful_exits.append(pair)
+                logger.info("Successfully exited position: %s", pair)
+            else:
+                failed_exits.append(pair)
+                logger.error("Failed to exit position: %s", pair)
 
-    logger.warning("Emergency exit complete — all positions liquidated")
+    # Step 3: Only clear internal state for successfully exited positions
+    if successful_exits:
+        logger.warning("Emergency exit complete — successfully liquidated: %s", successful_exits)
+    else:
+        logger.error("Emergency exit FAILED — no positions were successfully liquidated")
+    
+    if failed_exits:
+        logger.error("Failed to exit positions: %s - these positions still exist on exchange", failed_exits)
+        logger.error("BOT IS OUT OF SYNC WITH EXCHANGE - MANUAL RECONCILIATION REQUIRED")
 
 
 def per_position_stop_check(

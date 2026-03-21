@@ -168,11 +168,25 @@ class OrderManager:
         Always succeeds or logs failure — never raises.
         """
         try:
-            resp = self._client.place_order(pair=pair, side=side, quantity=quantity)
+            # Validate quantity precision before sending to exchange
+            pairs_info = self._exchange_info.get("TradePairs", {})
+            if pair not in pairs_info:
+                logger.warning("Pair %s not in exchange info — skipping market order", pair)
+                return False
+
+            info = pairs_info[pair]
+            # Floor quantity to exchange precision
+            adj_qty = floor_to_precision(quantity, info["AmountPrecision"])
+            
+            if adj_qty <= 0:
+                logger.warning("Adjusted quantity is zero for %s — skipping market order", pair)
+                return False
+
+            resp = self._client.place_order(pair=pair, side=side, quantity=adj_qty)
             success = resp.get("Success", False)
             order_id = resp.get("OrderId")
             status = "FILLED_EST" if success else "REJECTED"
-            log_trade(pair, side, "MARKET", quantity, None, order_id, status, reason=reason)
+            log_trade(pair, side, "MARKET", adj_qty, None, order_id, status, reason=reason)
             if not success:
                 logger.error("Market order failed for %s %s: %s", side, pair, resp)
             return success
