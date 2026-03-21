@@ -61,6 +61,7 @@ class DrawdownTracker:
     def update(
         self,
         usd_free: float,
+        usd_locked: float,
         positions: dict,  # pair → qty
         prices: dict,     # pair → last_price
     ) -> DrawdownState:
@@ -68,21 +69,30 @@ class DrawdownTracker:
         Recompute current NAV and return updated drawdown state.
 
         Args:
-            usd_free:  Free USD in wallet.
-            positions: Dict[pair, qty] of open positions.
-            prices:    Dict[pair, last_price] from latest ticker.
+            usd_free:    Free USD in wallet.
+            usd_locked:  Locked USD in pending orders.
+            positions:   Dict[pair, qty] of open positions.
+            prices:      Dict[pair, last_price] from latest ticker.
 
         Returns:
             DrawdownState with current metrics.
         """
-        # Compute position value
+        # Compute position value (includes both free and locked coins)
         position_value = 0.0
         for pair, qty in positions.items():
             price = prices.get(pair)
             if price and price > 0 and qty > 0:
                 position_value += qty * price
 
-        current_nav = usd_free + position_value
+        # Calculate total USD (free + locked)
+        total_usd = usd_free + usd_locked
+        
+        # Calculate total NAV: USD (free + locked) + position value
+        current_nav = total_usd + position_value
+        
+        # Debug logging for NAV breakdown
+        logger.info(f"NAV Breakdown - Cash: ${total_usd:.2f} | Assets: ${position_value:.2f} | Total: ${current_nav:.2f}")
+        
         self._current_nav = current_nav
         self._nav_history.append((time.time(), current_nav))
 

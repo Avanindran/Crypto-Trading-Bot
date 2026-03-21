@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def reconcile_on_startup(
     client: RoostooClient,
     internal_positions: Dict[str, float],
-) -> Tuple[Dict[str, float], float]:
+) -> Tuple[Dict[str, float], float, float]:
     """
     Reconcile bot state against the live API on startup.
 
@@ -34,9 +34,10 @@ def reconcile_on_startup(
         internal_positions: Internal position dict (pair → qty) from saved state.
 
     Returns:
-        (reconciled_positions, usd_free)
+        (reconciled_positions, usd_free, usd_locked)
           reconciled_positions: Updated dict matching real balances.
           usd_free:             Free USD available for new trades.
+          usd_locked:           Locked USD in pending orders.
     """
     logger.info("Starting state reconciliation...")
 
@@ -52,9 +53,10 @@ def reconcile_on_startup(
         wallet = client.get_balance()
     except Exception as exc:
         logger.error("Failed to fetch balance during reconciliation: %s", exc)
-        return internal_positions, 0.0
+        return internal_positions, 0.0, 0.0
 
     usd_free = float(wallet.get("USD", {}).get("Free", 0.0))
+    usd_locked = float(wallet.get("USD", {}).get("Freeze", 0.0))
 
     # Build actual positions from real non-zero coin balances
     reconciled: Dict[str, float] = {}
@@ -87,11 +89,11 @@ def reconcile_on_startup(
         )
 
     logger.info(
-        "Reconciliation complete. USD free=%.2f, positions=%s",
-        usd_free,
+        "Reconciliation complete. USD free=%.2f locked=%.2f, positions=%s",
+        usd_free, usd_locked,
         {p: f"{q:.6f}" for p, q in reconciled.items()},
     )
-    return reconciled, usd_free
+    return reconciled, usd_free, usd_locked
 
 
 def verify_startup_conditions(client: RoostooClient) -> Dict[str, Any]:
