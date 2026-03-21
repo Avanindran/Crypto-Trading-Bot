@@ -3,7 +3,7 @@ bot/risk/constraints.py — Trade timing and position constraints.
 
 Enforces rules that protect Sortino by preventing fee-drag from excessive turnover:
 
-  1. Minimum holding period (4h) — prevents noise-driven churn at 0.10% round-trip cost
+  1. Minimum holding period (4h) — prevents noise-driven churn at 0.05% maker fee
   2. Re-entry lockout (2h) — avoids immediately re-buying a just-sold asset
   3. Max hold time (72h) — forces exit of stale positions regardless of signal
 
