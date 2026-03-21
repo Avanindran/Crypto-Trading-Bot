@@ -126,10 +126,27 @@ def run() -> None:
     }
     real_positions, usd_free, usd_locked = reconcile_on_startup(client, internal_positions)
 
-    # Sync constraints with real positions (don't track positions we don't hold)
+    # Sync constraints with real positions
+    # Remove positions we no longer hold
     for pair in list(constraints.all_positions().keys()):
         if pair not in real_positions:
             constraints.record_exit(pair)
+    
+    # Add any new positions found in real wallet to constraints
+    # Note: We don't know the entry price, so we'll use current price as approximation
+    current_prices = {}
+    if ticker_data := client.get_ticker():
+        current_prices = {pair: float(info["LastPrice"]) for pair, info in ticker_data.items()}
+    
+    for pair, qty in real_positions.items():
+        if pair not in constraints.all_positions():
+            # We found a position in the wallet that's not in our internal state
+            entry_price = current_prices.get(pair, 0.0)  # Use current price as approximation
+            if entry_price > 0:
+                logger.warning("Found untracked position in wallet: %s qty=%.6f @ $%.2f", pair, qty, entry_price)
+                constraints.record_entry(pair, entry_price, qty)
+            else:
+                logger.warning("Cannot track position %s - no current price available", pair)
 
     # ── Get tradable pairs from exchange info ─────────────────────────────────
     tradable_pairs = list(exchange_info.get("TradePairs", {}).keys())
