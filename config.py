@@ -127,7 +127,7 @@ REGIME_PARAMS: Dict[str, dict] = {
     "NEUTRAL_MIXED": {
         "max_positions": 3,
         "gross_cap": 0.65,
-        "entry_c1_threshold": 0.60,  # Tighter: top ~15%
+        "entry_c1_threshold": 0.80,  # Tighter: top ~15%
         "lambda_t": 0.80,
     },
     "HAZARD_DEFENSIVE": {

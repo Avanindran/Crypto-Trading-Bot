@@ -1,0 +1,122 @@
+import os
+import sys
+from dotenv import load_dotenv
+from bot.data.roostoo_client import RoostooClient
+
+def analyze_pair(target_pair):
+    load_dotenv()
+    client = RoostooClient(os.getenv("ROOSTOO_API_KEY"), os.getenv("ROOSTOO_API_SECRET"))
+    
+    # Standardize the input (e.g., "eden/usd" -> "EDEN/USD")
+    target_pair = target_pair.strip().upper()
+    if "/" not in target_pair:
+        target_pair = f"{target_pair}/USD"
+    
+    try:
+        print(f"Fetching history and live market data for {target_pair}...")
+        orders = client.query_order(pending_only=False)
+        tickers = client.get_ticker() # We need the live price to value open bags
+        
+# --- API PARSING FIX ---
+        # If Roostoo returns a dictionary package, dig inside it to find the list
+        if isinstance(orders, dict):
+            # Try common keys where Roostoo might hide the list of orders
+            orders = orders.get('Orders', orders.get('Result', orders.get('data', orders.get('orders', orders))))
+        
+        # If it's STILL not a list, print exactly what the API sent so we can see it
+        if not isinstance(orders, list):
+            print(f"DEBUG - Unrecognized API Format. Raw Data received:\n{orders}")
+            return
+            
+        if len(orders) == 0:
+            print("No trades found on the exchange yet.")
+            return
+        # -----------------------       
+
+ if not isinstance(orders, list):
+            print("No 
+
+        # PnL Tracking Variables
+        total_bought_qty = 0.0
+        total_spent = 0.0
+        total_sold_qty = 0.0
+        total_earned = 0.0
+        match_count = 0
+        
+        print("\n" + "="*55)
+        print(f"   TRADE EXECUTION LOG: {target_pair}")
+        print("="*55)
+
+        # Loop through history (oldest to newest usually, but we process all)
+        for order in orders:
+            pair = str(order.get('TradePairId', order.get('pair', ''))).upper()
+            
+            if pair == target_pair:
+                match_count += 1
+                side = str(order.get('Side', order.get('side', ''))).upper()
+                qty = float(order.get('Quantity', order.get('quantity', 0)))
+                price = float(order.get('Price', order.get('price', 0)))
+                
+                if side == "BUY":
+                    total_bought_qty += qty
+                    total_spent += (qty * price)
+                    print(f"\033[92m[BUY]\033[0m  {qty:<12.4f} @ ${price:.4f} (Cost: ${qty*price:.2f})")
+                elif side == "SELL":
+                    total_sold_qty += qty
+                    total_earned += (qty * price)
+                    print(f"\033[91m[SELL]\033[0m {qty:<12.4f} @ ${price:.4f} (Earned: ${qty*price:.2f})")
+
+        if match_count == 0:
+            print(f"No executions found for {target_pair}.")
+            print("="*55 + "\n")
+            return
+
+        # --- The PnL Math ---
+        # 1. How many coins are we still holding?
+        current_bag = total_bought_qty - total_sold_qty
+        
+        # 2. What was our average entry and exit?
+        avg_buy_price = (total_spent / total_bought_qty) if total_bought_qty > 0 else 0
+        avg_sell_price = (total_earned / total_sold_qty) if total_sold_qty > 0 else 0
+        
+        # 3. What is the live value of the coins we haven't sold yet?
+        live_price = float(tickers.get(target_pair, {}).get('LastPrice', 0))
+        current_value = current_bag * live_price if current_bag > 0 else 0.0
+        
+        # 4. Total PnL = (Cash from Sells) + (Value of current bags) - (Cash spent on Buys)
+        total_pnl = total_earned + current_value - total_spent
+        
+        print("-" * 55)
+        print(f"📊 PERFORMANCE METRICS: {target_pair}")
+        print("-" * 55)
+        print(f"Total Executions : {match_count}")
+        print(f"Avg Buy Price    : ${avg_buy_price:.4f}")
+        print(f"Avg Sell Price   : ${avg_sell_price:.4f}")
+        
+        # Format the bag nicely to avoid showing tiny floating point dust like 0.000000001
+        clean_bag = max(0, round(current_bag, 6))
+        print(f"Net Position     : {clean_bag} {target_pair.split('/')[0]}")
+        
+        if clean_bag > 0.0001:
+            print(f"Live Asset Price : ${live_price:.4f}")
+            print(f"Open Bag Value   : ${current_value:.2f}")
+
+        if total_pnl >= 0:
+            print(f"Total PnL        : \033[92m+${total_pnl:.2f}\033[0m")
+        else:
+            print(f"Total PnL        : \033[91m-${abs(total_pnl):.2f}\033[0m")
+        
+        print("="*55 + "\n")
+
+    except Exception as e:
+        print(f"Failed to analyze pair: {e}")
+
+if __name__ == "__main__":
+    # If the user runs `python3 trade_blotter.py EDEN`
+    if len(sys.argv) > 1:
+        target = sys.argv[1]
+    # If the user just runs `python3 trade_blotter.py` and forgets the pair
+    else:
+        target = input("Enter trading pair to analyze (e.g., EDEN or EDEN/USD): ")
+        
+    analyze_pair(target)
