@@ -59,14 +59,18 @@ def reconcile_on_startup(
     usd_locked = float(wallet.get("USD", {}).get("Freeze", 0.0))
 
     # Build actual positions from real non-zero coin balances
+    # CRITICAL FIX: Map base assets (e.g., 'PLUME') to pair format (e.g., 'PLUME/USD')
+    # and ensure values are explicitly cast to float to prevent math failures
     reconciled: Dict[str, float] = {}
     for coin, balances in wallet.items():
         if coin == "USD":
             continue
+        # CRITICAL FIX: Explicitly cast String values to float
         free = float(balances.get("Free", 0.0))
         frozen = float(balances.get("Freeze", 0.0))
         total = free + frozen
         if total > 1e-8:  # Ignore dust (small negative rounding errors)
+            # CRITICAL FIX: Append "/USD" to match internal pair format
             pair = f"{coin}/USD"
             reconciled[pair] = total
 
