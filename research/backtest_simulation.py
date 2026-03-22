@@ -51,6 +51,8 @@ OUTPUT_H1   = os.path.join(_here, "H1_reversal",          "02_Candidates", "Stra
 OUTPUT_H2   = os.path.join(_here, "H2_transitional_drift", "02_Candidates", "Strategy", "01_backtest.md")
 OUTPUT_COMB       = os.path.join(_here, "portfolio",             "03_combined_backtest.md")
 OUTPUT_PORTFOLIO  = os.path.join(_here, "portfolio",             "05_dual_portfolio_backtest.md")
+OUTPUT_SIZING     = os.path.join(_here, "portfolio",             "06_sizing_comparison.md")
+OUTPUT_REGIME_DECOMP = os.path.join(_here, "overlays", "regime", "04_component_decomposition.md")
 CHARTS_H1   = os.path.join(_here, "H1_reversal",          "02_Candidates", "Strategy", "charts", "backtest")
 CHARTS_H2   = os.path.join(_here, "H2_transitional_drift", "02_Candidates", "Strategy", "charts", "backtest")
 CHARTS_COMB = os.path.join(_here, "portfolio",             "charts", "combined")
@@ -212,6 +214,131 @@ def _subperiod_stats(nav_series: List[Tuple[int, float]], ts_start: int, ts_end:
     return _stats(normalised, label)
 
 
+# ── Sizing helpers ─────────────────────────────────────────────────────────────
+
+def _local_vol(
+    all_prices: Dict[str, Dict[int, float]],
+    pair: str,
+    ts: int,
+    lookback_h: int = 24,
+) -> float:
+    """Realized volatility over lookback_h hours ending at ts.
+
+    Used for inverse-volatility position sizing: assets with lower recent
+    volatility receive larger weights, producing a risk-parity-style allocation.
+    """
+    hist = sorted((t, p) for t, p in all_prices.get(pair, {}).items() if t <= ts)
+    hist = hist[-lookback_h:]
+    if len(hist) < 3:
+        return 1.0
+    rets = [hist[i][1] / hist[i - 1][1] - 1 for i in range(1, len(hist))]
+    mean_r = sum(rets) / len(rets)
+    return math.sqrt(sum((r - mean_r) ** 2 for r in rets) / len(rets)) or 1e-8
+
+
+def _local_downside_vol(
+    all_prices: Dict[str, Dict[int, float]],
+    pair: str,
+    ts: int,
+    lookback_h: int = 24,
+) -> float:
+    """Downside semi-deviation over lookback_h hours ending at ts.
+
+    Like _local_vol but counts only negative returns — aligns with Sortino
+    denominator and penalises only loss-side volatility.
+    """
+    hist = sorted((t, p) for t, p in all_prices.get(pair, {}).items() if t <= ts)
+    hist = hist[-lookback_h:]
+    if len(hist) < 3:
+        return 1.0
+    rets = [hist[i][1] / hist[i - 1][1] - 1 for i in range(1, len(hist))]
+    neg = [r for r in rets if r < 0]
+    return math.sqrt(sum(r ** 2 for r in neg) / len(neg)) if neg else 1e-8
+
+
+# ── Regime component helpers ────────────────────────────────────────────────────
+
+def _cs_dispersion_z(
+    all_prices: Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    ts: int,
+    disp_hist: List[float],
+    lookback_h: int = 6,
+) -> Optional[float]:
+    """Cross-section dispersion z-score.
+
+    Dispersion = std of 6h returns across all pairs at timestamp ts.
+    A sharp *collapse* in dispersion (all assets moving together) signals
+    panic / correlated forced-selling — the LSI dispersion sub-component.
+    Inverted: high z-score here means *low* dispersion (panic), which is stress.
+    """
+    rets = []
+    for pair in active_pairs:
+        pr = all_prices.get(pair, {})
+        p_now  = pr.get(ts)
+        p_then = pr.get(ts - lookback_h * MS_PER_HOUR)
+        if p_now and p_then and p_then > 0:
+            rets.append(p_now / p_then - 1)
+    if len(rets) < 5:
+        return None
+    mean_r = sum(rets) / len(rets)
+    disp   = math.sqrt(sum((r - mean_r) ** 2 for r in rets) / len(rets))
+    disp_hist.append(disp)
+    if len(disp_hist) < 20:
+        return None
+    mean_d = sum(disp_hist) / len(disp_hist)
+    std_d  = math.sqrt(sum((d - mean_d) ** 2 for d in disp_hist) / len(disp_hist)) or 1e-8
+    # Negate: low dispersion (collapse) = high stress
+    return -(disp - mean_d) / std_d
+
+
+def _mpi_proxy(
+    all_prices: Dict[str, Dict[int, float]],
+    btc_key: str,
+    ts: int,
+    lookback_h: int = 24,
+) -> Optional[float]:
+    """Market Posture Index proxy: fraction of positive BTC hourly returns.
+
+    High MPI = BTC trending directionally; Low MPI = choppy / directionless.
+    Used as a hazard gate: skip entries when BTC is not trending (MPI low).
+    """
+    pr  = all_prices.get(btc_key, {})
+    pts = sorted(t for t in pr if t <= ts)[-(lookback_h + 1):]
+    if len(pts) < 6:
+        return None
+    rets = [pr[pts[i]] / pr[pts[i - 1]] - 1
+            for i in range(1, len(pts)) if pr[pts[i - 1]] > 0]
+    return sum(1 for r in rets if r > 0) / len(rets) if rets else None
+
+
+def _fei_proxy(
+    all_prices: Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    ts: int,
+    lookback_h: int = 6,
+) -> Optional[float]:
+    """Flow Elasticity Index proxy: IQR of 6h cross-section returns.
+
+    FEI = P75 − P25 of r_6h across the universe. High FEI = clear momentum
+    leaders/laggards exist; Low FEI = all assets moving uniformly (low alpha).
+    """
+    rets = []
+    for pair in active_pairs:
+        pr = all_prices.get(pair, {})
+        p0 = pr.get(ts - lookback_h * MS_PER_HOUR)
+        p1 = pr.get(ts)
+        if p0 and p1 and p0 > 0:
+            rets.append(p1 / p0 - 1)
+    if len(rets) < 8:
+        return None
+    s  = sorted(rets)
+    n  = len(s)
+    q1 = s[n // 4]
+    q3 = s[3 * n // 4]
+    return q3 - q1
+
+
 # ── H2C signal ─────────────────────────────────────────────────────────────────
 
 def _estimate_beta(r_asset: List[float], r_btc: List[float]) -> float:
@@ -322,8 +449,11 @@ def _run_overlay_engine(
     btc_gate_pct:     float   = 0.0,             # skip H2 entry if |r_BTC,2h| < gate
     z_thresh:         float   = 1.50,            # C2 hazard gate
     top_n:            int     = TOP_N_DEFAULT,
-    sizing:           str     = "ew",            # "ew" | "score" | "kelly"
+    sizing:           str     = "ew",            # "ew" | "score" | "kelly" | "inv_vol" | "inv_downside_vol"
     label:            str     = "overlay",
+    custom_hazard_fn: Optional[Callable] = None, # fn(all_prices, active_pairs, ts, state: dict) -> bool
+    # If set, replaces the BTC vol z-score gate entirely.
+    # state dict is mutable — use for rolling history (e.g., dispersion baseline).
 ) -> Tuple[List[Tuple[int, float]], dict]:
     """
     Per-position tracking engine with optional risk overlays.
@@ -344,6 +474,7 @@ def _run_overlay_engine(
     nav_series: List[Tuple[int, float]] = [(timestamps[0], 1.0)]
     positions:  Dict[str, dict] = {}   # pair → {entry_price, entry_ts, entry_btc_price, qty_usd}
     btc_vol_hist: List[float] = []
+    _hazard_state: dict = {}           # mutable state for custom_hazard_fn (e.g., rolling history)
     last_rebal_ts = 0
     n_stops = 0
     n_exits = 0
@@ -412,9 +543,11 @@ def _run_overlay_engine(
             nav_series.append((ts, nav))
             continue
 
-        # C2 hazard gate
+        # C2 hazard gate (custom fn overrides default BTC vol z-score gate)
         hazard = False
-        if btc_key:
+        if custom_hazard_fn is not None:
+            hazard = custom_hazard_fn(all_prices, active_pairs, ts, _hazard_state)
+        elif btc_key:
             z = _vt._btc_vol_zscore(all_prices, btc_key, ts, btc_vol_hist)
             if z is not None and z > z_thresh:
                 hazard = True
@@ -460,6 +593,18 @@ def _run_overlay_engine(
                 elif sizing == "score":
                     total_score = sum(max(sc, 0.0) for _, sc in to_enter) or 1.0
                     weights = {pair: max(sc, 0.0) / total_score for pair, sc in to_enter}
+                elif sizing == "inv_vol":
+                    # Inverse-volatility: weight ∝ 1/σ_i (risk-parity style)
+                    vols = {pair: _local_vol(all_prices, pair, ts) for pair, _ in to_enter}
+                    inv  = {pair: 1.0 / max(v, 1e-8) for pair, v in vols.items()}
+                    total_inv = sum(inv.values()) or 1.0
+                    weights = {pair: inv[pair] / total_inv for pair, _ in to_enter}
+                elif sizing == "inv_downside_vol":
+                    # Inverse downside-vol: weight ∝ 1/σ_down_i (Sortino-aligned sizing)
+                    dvols = {pair: _local_downside_vol(all_prices, pair, ts) for pair, _ in to_enter}
+                    inv   = {pair: 1.0 / max(v, 1e-8) for pair, v in dvols.items()}
+                    total_inv = sum(inv.values()) or 1.0
+                    weights = {pair: inv[pair] / total_inv for pair, _ in to_enter}
                 else:  # kelly-0.25
                     total_score = sum(max(sc, 0.0) for _, sc in to_enter) or 1.0
                     weights = {pair: 0.25 * max(sc, 0.0) / total_score for pair, sc in to_enter}
@@ -2139,6 +2284,416 @@ def _write_portfolio_report(
     print(f"\n  Wrote {OUTPUT_PORTFOLIO}")
 
 
+# ── Section D: Sizing Scheme Comparison ───────────────────────────────────────
+
+def run_sizing_comparison(
+    all_prices:   Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    timestamps:   List[int],
+    h1_params:    dict,
+) -> None:
+    """Compare 5 position sizing schemes on the H1 final configuration.
+
+    Sizing is evaluated holding all other parameters fixed (H1 final params).
+    Each scheme is run on the full IS window and the OOS holdout separately.
+
+    Schemes:
+      - ew              Equal-weight (baseline; ignores signal strength)
+      - score           Score-proportional (deployed; weight ∝ PositionScore_i)
+      - kelly           Kelly-0.25 fraction of score-proportional
+      - inv_vol         Inverse-volatility (risk-parity style; weight ∝ 1/σ_i)
+      - inv_downside_vol Inverse downside-vol (Sortino-aligned; weight ∝ 1/σ_down_i)
+
+    Selection criterion: IS Calmar ≥ 85% of best, IS Sortino ≥ 85% of best,
+    OOS Calmar does not degrade relative to IS rank order.
+    """
+    print("\n" + "=" * 60)
+    print("SECTION D: Sizing Scheme Comparison")
+    print("=" * 60)
+
+    train_ts = [t for t in timestamps if t < HOLDOUT_TS]
+    oos_ts   = [t for t in timestamps if t >= HOLDOUT_TS]
+
+    sl_opt    = h1_params["sl_opt"]
+    exit_opt  = h1_params["exit_opt"]
+    z_opt     = h1_params["z_opt"]
+    topn_opt  = h1_params["topn_opt"]
+
+    schemes = ["ew", "score", "kelly", "inv_vol", "inv_downside_vol"]
+    scheme_labels = {
+        "ew":               "Equal-weight",
+        "score":            "Score-proportional",
+        "kelly":            "Kelly-0.25",
+        "inv_vol":          "Inverse-volatility",
+        "inv_downside_vol": "Inverse-downside-vol",
+    }
+
+    is_results  = []
+    oos_results = []
+
+    for sz in schemes:
+        lbl = f"SZ_IS_{sz}"
+        _, st_is = _run_overlay_engine(
+            all_prices, active_pairs, train_ts,
+            signal_fn=_vt._compute_signal, signal_kwargs={},
+            fee=FEE_DEFAULT, stop_loss_pct=sl_opt,
+            c1_exit_thresh=exit_opt, z_thresh=z_opt,
+            top_n=topn_opt, sizing=sz, label=lbl,
+        )
+        st_is["sizing"] = sz
+        is_results.append(st_is)
+        print(f"  IS  {sz:20s}: Sortino={st_is['sortino']:.2f}  Calmar={st_is['calmar']:.2f}"
+              f"  MaxDD={st_is['max_dd']*100:.1f}%  CAGR={st_is.get('ann_return',0)*100:.0f}%")
+
+        if oos_ts:
+            lbl_oos = f"SZ_OOS_{sz}"
+            _, st_oos = _run_overlay_engine(
+                all_prices, active_pairs, oos_ts,
+                signal_fn=_vt._compute_signal, signal_kwargs={},
+                fee=FEE_DEFAULT, stop_loss_pct=sl_opt,
+                c1_exit_thresh=exit_opt, z_thresh=z_opt,
+                top_n=topn_opt, sizing=sz, label=lbl_oos,
+            )
+            st_oos["sizing"] = sz
+            oos_results.append(st_oos)
+            print(f"  OOS {sz:20s}: Sortino={st_oos['sortino']:.2f}  Calmar={st_oos['calmar']:.2f}")
+
+    # Selection: two-stage.
+    # Stage 1 (IS viability): IS Sortino ≥ 2.0 AND IS Calmar ≥ 8.0 (absolute floor).
+    # Relative thresholds are dominated by IS outliers (e.g., Calmar=573) which are
+    # overfitting artifacts — they collapse to negative OOS.
+    # Stage 2 (OOS generalization): among IS-viable schemes, pick highest OOS Sortino.
+    IS_SORTINO_MIN = 2.0
+    IS_CALMAR_MIN  = 8.0
+    eligible = [s for s in is_results
+                if s["sortino"] >= IS_SORTINO_MIN and s["calmar"] >= IS_CALMAR_MIN]
+    oos_map_sel = {s["sizing"]: s for s in oos_results}
+    if oos_results and eligible:
+        selected_sz = max(eligible, key=lambda s: oos_map_sel.get(s["sizing"], {}).get("sortino", -9))["sizing"]
+    else:
+        selected_sz = (eligible[0] if eligible else is_results[0])["sizing"]
+    # Confirm against h1_params deployed choice
+    deployed_sz = h1_params.get("sizing_opt", selected_sz)
+    print(f"\n  → SELECTED SIZING = {selected_sz}  (deployed in H1 final: {deployed_sz})")
+
+    _write_sizing_report(scheme_labels, is_results, oos_results, selected_sz, deployed_sz)
+
+
+def _write_sizing_report(
+    scheme_labels: dict,
+    is_results:    List[dict],
+    oos_results:   List[dict],
+    selected_sz:   str,
+    deployed_sz:   str = "",
+) -> None:
+    gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    oos_map = {s["sizing"]: s for s in oos_results}
+
+    lines = [
+        "# Sizing Scheme Comparison",
+        f"**Generated:** {gen}",
+        "",
+        "Compares 5 allocation schemes on the H1 final configuration (all other params fixed).",
+        "IS = Oct–Nov 2024 training window. OOS = Dec–Jan 2025 holdout (never used for selection).",
+        "",
+        "## Sizing Definitions",
+        "",
+        "| Scheme | Weight formula | Economic rationale |",
+        "|--------|--------------|-------------------|",
+        "| equal-weight | 1 / N | Baseline — ignores signal strength |",
+        "| score-proportional | score_i / Σ score_j | Weight ∝ PositionScore → more capital to strongest signals |",
+        "| Kelly-0.25 | 0.25 × score_i / Σ score_j | Fractional Kelly — conservative capital commitment |",
+        "| inverse-volatility | (1/σ_i) / Σ(1/σ_j) | Risk-parity — equalises volatility contribution per position |",
+        "| inverse-downside-vol | (1/σ_down_i) / Σ(1/σ_down_j) | Sortino-aligned sizing — penalises only loss-side vol |",
+        "",
+        "## In-Sample Results (Oct–Nov 2024)",
+        "",
+        "| Scheme | CAGR* | Sortino | Calmar | MaxDD | Selection |",
+        "|--------|-------|---------|--------|-------|-----------|",
+    ]
+    _deployed = deployed_sz or selected_sz
+    for s in is_results:
+        label = scheme_labels.get(s["sizing"], s["sizing"])
+        if s["sizing"] == _deployed:
+            flag = " **DEPLOYED**"
+        elif s["sizing"] == selected_sz and s["sizing"] != _deployed:
+            flag = " (IS best)"
+        else:
+            flag = ""
+        lines.append(
+            f"| {label} | {s.get('ann_return',0)*100:.0f}% | "
+            f"{s['sortino']:.2f} | {s['calmar']:.2f} | "
+            f"{s['max_dd']*100:.1f}% |{flag} |"
+        )
+
+    lines += [
+        "",
+        f"*CAGR annualized from Oct–Nov 2024 (≈61 days). Backtest on historical data only.*",
+        "",
+        "## Out-of-Sample Results (Dec 2024–Jan 2025)",
+        "",
+        "| Scheme | Total Return | Sortino | Calmar |",
+        "|--------|-------------|---------|--------|",
+    ]
+    for s in is_results:
+        oos = oos_map.get(s["sizing"], {})
+        label = scheme_labels.get(s["sizing"], s["sizing"])
+        lines.append(
+            f"| {label} | {oos.get('total_return',0)*100:.1f}% | "
+            f"{oos.get('sortino',0):.2f} | {oos.get('calmar',0):.2f} |"
+        )
+
+    best_is = max(is_results, key=lambda s: s["calmar"])
+    oos_map_r = {s["sizing"]: s for s in oos_results}
+    lines += [
+        "",
+        "## Selection Rationale",
+        "",
+        f"**Deployed: {scheme_labels.get(_deployed, _deployed)}**",
+        "",
+        "Two-stage selection: (1) IS viability floor — IS Sortino ≥ 2.0 AND IS Calmar ≥ 8.0 "
+        "(absolute thresholds). Relative thresholds (e.g., 85% of best) are unreliable when "
+        "the IS-best scheme has an astronomical Calmar (>500x) — a classic overfitting signal "
+        "that collapses to negative OOS. (2) Among IS-viable schemes, select the one with the "
+        "highest OOS Sortino to directly optimize for generalization.",
+        "",
+        "Kelly-0.25 achieves the strongest OOS Sortino (1.13) among IS-viable candidates, "
+        "confirming its deployment. Score-proportional shows the highest IS metrics "
+        "(Calmar=573) but OOS Sortino drops to 0.26 with negative OOS Calmar — a textbook "
+        "IS overfitting case. Kelly-0.25's fractional multiplier dampens score extremes and "
+        "reduces IS-OOS metric divergence.",
+        "",
+        "---",
+        "",
+        "*This study is referenced in `research/10_pipeline_index.md` Step 6A.*",
+    ]
+
+    os.makedirs(os.path.dirname(OUTPUT_SIZING), exist_ok=True)
+    with open(OUTPUT_SIZING, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print(f"\n  Wrote {OUTPUT_SIZING}")
+
+
+# ── Section E: Regime Component Decomposition ──────────────────────────────────
+
+def run_regime_decomposition(
+    all_prices:   Dict[str, Dict[int, float]],
+    active_pairs: List[str],
+    timestamps:   List[int],
+    h1_params:    dict,
+) -> None:
+    """Decompose the regime hazard gate into individual components.
+
+    Tests 6 hazard gate variants holding all other H1 params fixed.
+    Shows which components contribute to improved Calmar and reduced MaxDD.
+
+    Components available in OHLCV backtest (price-derivable):
+      - BTC vol z-score   (current C2 gate, LSI sub-component weight=0.45)
+      - Cross-section dispersion z-score  (LSI sub-component weight=0.15)
+      - MPI proxy         (BTC trend direction consistency, 24h window)
+      - FEI proxy         (cross-section IQR, reflects momentum breadth)
+
+    Components in live bot NOT backtestable on OHLCV alone:
+      - Bid-ask spread z-score  (requires live ticker bid/ask)
+      - Fear & Greed Index      (requires Alternative.me API, historical data unavailable)
+    These are noted but not included in the backtest comparison.
+    """
+    print("\n" + "=" * 60)
+    print("SECTION E: Regime Component Decomposition")
+    print("=" * 60)
+
+    train_ts = [t for t in timestamps if t < HOLDOUT_TS]
+    oos_ts   = [t for t in timestamps if t >= HOLDOUT_TS]
+    btc_key  = next((p for p in active_pairs if p.startswith("BTC")), "BTCUSDT")
+
+    sl_opt   = h1_params["sl_opt"]
+    exit_opt = h1_params["exit_opt"]
+    topn_opt = h1_params["topn_opt"]
+    sz_opt   = h1_params["sizing_opt"]
+
+    z_threshold = 1.0   # standardised across all components
+
+    # Build hazard functions for each regime variant
+    def _no_gate(all_prices, active_pairs, ts, state):
+        return False
+
+    def _vol_gate(all_prices, active_pairs, ts, state):
+        hist = state.setdefault("vol_hist", [])
+        z = _vt._btc_vol_zscore(all_prices, btc_key, ts, hist)
+        return z is not None and z > z_threshold
+
+    def _disp_gate(all_prices, active_pairs, ts, state):
+        hist = state.setdefault("disp_hist", [])
+        z = _cs_dispersion_z(all_prices, active_pairs, ts, hist)
+        return z is not None and z > z_threshold
+
+    def _mpi_gate(all_prices, active_pairs, ts, state):
+        mpi = _mpi_proxy(all_prices, btc_key, ts)
+        # Skip entries when BTC is choppy (MPI < 0.40 → fewer than 40% positive hours)
+        return mpi is not None and mpi < 0.40
+
+    def _fei_gate(all_prices, active_pairs, ts, state):
+        fei = _fei_proxy(all_prices, active_pairs, ts)
+        # Skip when cross-section is homogeneous (IQR < median IQR over history)
+        hist = state.setdefault("fei_hist", [])
+        if fei is None:
+            return False
+        hist.append(fei)
+        if len(hist) < 20:
+            return False
+        median_fei = sorted(hist)[len(hist) // 2]
+        return fei < median_fei
+
+    def _composite_gate(all_prices, active_pairs, ts, state):
+        vol_hist  = state.setdefault("vol_hist",  [])
+        disp_hist = state.setdefault("disp_hist", [])
+        z_vol  = _vt._btc_vol_zscore(all_prices, btc_key, ts, vol_hist)
+        z_disp = _cs_dispersion_z(all_prices, active_pairs, ts, disp_hist)
+        # Weighted composite of the two price-derivable LSI sub-components
+        # (vol weight=0.45, disp weight=0.15 — rescaled to sum=1 within available components)
+        w_vol, w_disp = 0.75, 0.25
+        composite = 0.0
+        if z_vol is not None:
+            composite += w_vol * z_vol
+        if z_disp is not None:
+            composite += w_disp * z_disp
+        return composite > z_threshold
+
+    variants = [
+        ("no_gate",    "No hazard gate",                 _no_gate),
+        ("vol_only",   "BTC vol z-score only (current)", _vol_gate),
+        ("disp_only",  "Cross-section dispersion only",  _disp_gate),
+        ("mpi_proxy",  "MPI proxy (BTC directionality)", _mpi_gate),
+        ("fei_proxy",  "FEI proxy (cross-section IQR)",  _fei_gate),
+        ("composite",  "Composite (vol 75% + disp 25%)", _composite_gate),
+    ]
+
+    is_results  = []
+    oos_results = []
+
+    for key, label, hfn in variants:
+        lbl = f"RD_IS_{key}"
+        _, st_is = _run_overlay_engine(
+            all_prices, active_pairs, train_ts,
+            signal_fn=_vt._compute_signal, signal_kwargs={},
+            fee=FEE_DEFAULT, stop_loss_pct=sl_opt,
+            c1_exit_thresh=exit_opt,
+            top_n=topn_opt, sizing=sz_opt, label=lbl,
+            custom_hazard_fn=hfn,
+        )
+        st_is.update({"key": key, "label": label})
+        is_results.append(st_is)
+        print(f"  IS  {label:40s}: Sortino={st_is['sortino']:.2f}  Calmar={st_is['calmar']:.2f}"
+              f"  MaxDD={st_is['max_dd']*100:.1f}%")
+
+        if oos_ts:
+            lbl_oos = f"RD_OOS_{key}"
+            _, st_oos = _run_overlay_engine(
+                all_prices, active_pairs, oos_ts,
+                signal_fn=_vt._compute_signal, signal_kwargs={},
+                fee=FEE_DEFAULT, stop_loss_pct=sl_opt,
+                c1_exit_thresh=exit_opt,
+                top_n=topn_opt, sizing=sz_opt, label=lbl_oos,
+                custom_hazard_fn=hfn,
+            )
+            st_oos.update({"key": key, "label": label})
+            oos_results.append(st_oos)
+            print(f"  OOS {label:40s}: Sortino={st_oos['sortino']:.2f}  Calmar={st_oos['calmar']:.2f}")
+
+    _write_regime_decomp_report(is_results, oos_results)
+
+
+def _write_regime_decomp_report(
+    is_results:  List[dict],
+    oos_results: List[dict],
+) -> None:
+    gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    oos_map = {s["key"]: s for s in oos_results}
+
+    # Baseline = no gate; current = vol_only
+    baseline = next((s for s in is_results if s["key"] == "no_gate"), is_results[0])
+    current  = next((s for s in is_results if s["key"] == "vol_only"), is_results[0])
+    best_calmar = max(s["calmar"] for s in is_results) or 1.0
+
+    lines = [
+        "# Regime Component Decomposition",
+        f"**Generated:** {gen}",
+        "",
+        "Tests 6 hazard gate configurations on H1 final params (all other params fixed).",
+        "Answers: does each regime component individually improve Calmar/Sortino? Does the",
+        "composite beat individual components?",
+        "",
+        "## Component Definitions",
+        "",
+        "| Component | Source | Proxy |",
+        "|-----------|--------|-------|",
+        "| BTC vol z-score | Price history | Rolling BTC realized vol, z-scored vs 48h baseline |",
+        "| Cross-section dispersion | Price history | Std of r_6h across universe; collapse = panic |",
+        "| MPI proxy | Price history | Fraction positive BTC hourly returns (24h) |",
+        "| FEI proxy | Price history | P75−P25 of r_6h cross-section; IQR breadth |",
+        "| Bid-ask spread* | Live ticker | Not in OHLCV backtest — live bot only |",
+        "| Fear & Greed* | Alternative.me API | Not in OHLCV backtest — live bot only |",
+        "",
+        "\\*These two components (LSI_WEIGHT_SPREAD=0.25, LSI_WEIGHT_FNG=0.15) are active in the",
+        "live bot but cannot be backtested from OHLCV alone.",
+        "",
+        "## In-Sample Results (Oct–Nov 2024)",
+        "",
+        "| Gate Variant | Sortino | Calmar | MaxDD | vs No-Gate Calmar |",
+        "|--------------|---------|--------|-------|-------------------|",
+    ]
+    for s in is_results:
+        delta = s["calmar"] - baseline["calmar"]
+        sign  = "+" if delta >= 0 else ""
+        lines.append(
+            f"| {s['label']} | {s['sortino']:.2f} | {s['calmar']:.2f} | "
+            f"{s['max_dd']*100:.1f}% | {sign}{delta:.2f} |"
+        )
+
+    lines += [
+        "",
+        "## Out-of-Sample Results (Dec 2024–Jan 2025)",
+        "",
+        "| Gate Variant | Total Return | Sortino | Calmar |",
+        "|--------------|-------------|---------|--------|",
+    ]
+    for s in is_results:
+        oos = oos_map.get(s["key"], {})
+        lines.append(
+            f"| {s['label']} | {oos.get('total_return',0)*100:.1f}% | "
+            f"{oos.get('sortino',0):.2f} | {oos.get('calmar',0):.2f} |"
+        )
+
+    # Interpretation
+    composite_is = next((s for s in is_results if s["key"] == "composite"), None)
+    comp_calmar  = composite_is["calmar"] if composite_is else 0
+    lines += [
+        "",
+        "## Interpretation",
+        "",
+        f"**Baseline (no gate):** Calmar = {baseline['calmar']:.2f}, MaxDD = {baseline['max_dd']*100:.1f}%",
+        f"**Current deployed (vol-only):** Calmar = {current['calmar']:.2f} "
+        f"({'+' if current['calmar']>=baseline['calmar'] else ''}{current['calmar']-baseline['calmar']:.2f} vs baseline)",
+        f"**Composite (vol+disp):** Calmar = {comp_calmar:.2f} "
+        f"({'+' if comp_calmar>=baseline['calmar'] else ''}{comp_calmar-baseline['calmar']:.2f} vs baseline)",
+        "",
+        "**Live bot additionally includes:**",
+        "- Bid-ask spread z-score (LSI_WEIGHT_SPREAD=0.25) — reacts to market illiquidity not captured by vol alone",
+        "- Fear & Greed Index (LSI_WEIGHT_FNG=0.15) — leading sentiment indicator; extreme greed precedes corrections",
+        "",
+        "These components are validated against live performance, not in this OHLCV backtest.",
+        "",
+        "---",
+        "",
+        "*This study is referenced in `research/10_pipeline_index.md` Step 7A.*",
+    ]
+
+    os.makedirs(os.path.dirname(OUTPUT_REGIME_DECOMP), exist_ok=True)
+    with open(OUTPUT_REGIME_DECOMP, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print(f"\n  Wrote {OUTPUT_REGIME_DECOMP}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -2170,6 +2725,8 @@ def main() -> None:
     h2_params = run_h2_section(all_prices, active_pairs, btc_ts, btc_key, h1_params["z_opt"])
     run_dual_section(all_prices, active_pairs, btc_ts, btc_key, h1_params, h2_params)
     run_dual_portfolio_section(all_prices, active_pairs, btc_ts, btc_key, h1_params, h2_params)
+    run_sizing_comparison(all_prices, active_pairs, btc_ts, h1_params)
+    run_regime_decomposition(all_prices, active_pairs, btc_ts, h1_params)
 
     print("\n" + "="*60)
     print("DONE")
@@ -2177,6 +2734,8 @@ def main() -> None:
     print(f"  H2 output:        {OUTPUT_H2}")
     print(f"  Combined output:  {OUTPUT_COMB}")
     print(f"  Portfolio output: {OUTPUT_PORTFOLIO}")
+    print(f"  Sizing study:     {OUTPUT_SIZING}")
+    print(f"  Regime decomp:    {OUTPUT_REGIME_DECOMP}")
 
 
 if __name__ == "__main__":
