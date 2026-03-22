@@ -8,6 +8,11 @@ Computes the GP-selected combination signal from Phase 3 of the research pipelin
   neg_vol_z_i  = CS_z(−rvol_6h_i)   [H5 low-vol anomaly: stable coins outperform]
   C1_i         = 0.70 × neg_c1_z_i  +  0.30 × neg_vol_z_i
 
+  CS_z(x)_i = (x_i − mean(x_universe)) / std(x_universe)
+    Cross-sectional z-score: each asset's value expressed relative to all other assets
+    at the SAME timestamp. This removes common market beta (BTC trend, broad selloffs)
+    so C1 captures only asset-specific divergence — the part predictive of mean-reversion.
+
 Validated in research/03_validation/ and research/04_gp_search/:
   IC at 4h horizon — train: +0.047 (t=7.2), holdout: +0.066 (t=10.6)
   Decision: PROMOTED (IC > 0.03, t > 1.5, positive holdout)

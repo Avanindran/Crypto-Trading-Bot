@@ -3,6 +3,8 @@ bot/portfolio/allocator.py — Portfolio allocation from ranked assets to target
 
 Allocation pipeline:
   1. Score-proportional weights (research-validated: IC-Sharpe 11.35 > Kelly 10.48)
+     IC-Sharpe = mean(IC) / std(IC) × √n — measures signal consistency:
+     a scheme with stable IC across time beats one with equal mean but high variance.
   2. Apply 30% per-asset cap (MAX_POSITION_WEIGHT)
   3. Normalize to regime gross cap (e.g. 85% NAV for TREND_SUPPORTIVE)
 

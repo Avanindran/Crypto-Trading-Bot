@@ -80,8 +80,8 @@ MT_WEIGHT_FUNDING: float = 0.20     # Binance perp funding rate — crowded posi
 MT_LOOKBACK_PERIODS: int = 48       # 48h of 1-min snapshots for percentile rank
 
 # Funding rate normalization for M_t component
-FUNDING_RATE_NEUTRAL: float = 0.0001    # 0.01%/8h — typical neutral; below this: no maturity signal
-FUNDING_RATE_SCALE: float = 0.0008      # 0.08%/8h — at this level funding component reaches 1.0
+FUNDING_RATE_NEUTRAL: float = 0.0001    # 0.01%/8h — Binance perp funding settles every 8h; 0.01% is neutral carry; below this: no M_t signal
+FUNDING_RATE_SCALE: float = 0.0008      # 0.08%/8h — at this rate funding component reaches 1.0 (crowded long; entry blocked)
 FUNDING_RATE_REFRESH_LOOPS: int = 10    # Re-fetch every 10 loops (~10 min); funding changes every 8h
 
 # ──────────────────────────────────────────────────────────
@@ -95,7 +95,8 @@ FUNDING_RATE_REFRESH_LOOPS: int = 10    # Re-fetch every 10 loops (~10 min); fun
 LSI_WEIGHT_BTC_VOL: float = 0.45
 LSI_WEIGHT_SPREAD: float = 0.25
 LSI_WEIGHT_DISP: float = 0.15
-LSI_WEIGHT_FNG: float = 0.15        # Fear & Greed Index — extreme greed → leading stress signal
+LSI_WEIGHT_FNG: float = 0.15        # Fear & Greed Index (Alternative.me): Extreme Greed (>75) precedes corrections
+                                    # as leveraged longs unwind — leading indicator before price-based vol reacts
 
 # Fear & Greed fetch cadence
 FNG_REFRESH_HOURS: float = 24.0     # Refresh at most once per day (index updates daily)

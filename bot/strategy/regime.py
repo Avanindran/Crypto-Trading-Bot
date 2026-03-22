@@ -1,28 +1,32 @@
 """
-bot/strategy/regime.py — Crypto-adapted Regime State Vector (B-layer / Regime Inference).
+bot/strategy/regime.py — Market regime inference: converts market signals into hazard rate λ_t.
 
-Implements the Regime State Vector using ticker-only data.
-Derives proxies for three primary macro regime indices:
+λ_t exponentially scales all position scores — near-zero under stress:
+  PositionScore_i = C1_i × exp(−λ_t) × (1 − M_t_i)
+  λ=0.3 → exp(−0.3)=74% retained (trend)  |  λ=4.0 → exp(−4)=2% retained (defensive)
+
+Three indices drive the regime state:
 
   LSI_t — Liquidity Stress Index   [HIGHEST DOMINANCE — overrides all others]
-    Proxy: BTC realized vol z-score + bid-ask spread z-score + dispersion collapse
-           + Crypto Fear & Greed Index (sentiment leading indicator)
-    When elevated: de-gross immediately, no new entries.
+    Components: BTC realized vol z-score (45%) + bid-ask spread z-score (25%)
+                + cross-section dispersion collapse (15%) + Fear & Greed (15%)
+    "Realized vol z-score": how many σ above the recent vol baseline BTC's hourly vol is.
+    "Dispersion collapse": when all assets move together (low cross-sectional std of returns),
+    it signals panic — correlated selloffs where diversification and reversal signals break down.
+    When LSI elevated: de-gross immediately, no new entries.
 
   MPI_t — Market Posture Index
-    Proxy: BTC trend strength (directional move / realized vol ratio)
-    When low: choppy market, reduce position count and aggressiveness.
+    Proxy: |r_BTC,2h| / realized_vol_BTC — ratio of BTC's directional move to its own
+    typical volatility over 2h. High MPI = BTC trending cleanly. Low MPI = BTC choppy,
+    directional signal noise, position count reduced.
 
   FEI_t — Flow Elasticity Index
-    Proxy: Momentum concentration (top quartile vs bottom quartile spread)
-    When high: clear leaders exist, momentum strategy is favorable.
+    Proxy: top-quartile minus bottom-quartile of cross-section 6h returns.
+    High spread = clear momentum leaders exist, concentrated capital flows are present.
+    Low spread = all assets moving together, momentum differentiation unreliable.
 
-  PSI_t, GSI_t — Not directly observable from ticker data alone.
-    Set to 0.5 (neutral constant — not reliably estimable from ticker data alone).
-
-Dominance cascade output: (RegimeState, lambda_t)
-  lambda_t is the hazard rate passed to the scoring formula:
-  PositionScore_i = C1_i * exp(-lambda_t) * (1 - M_t_i)
+Dominance cascade: LSI > MPI > FEI  (LSI overrides all — see docs/STRATEGY.md)
+Output: (RegimeState, lambda_t) — λ_t passed directly into the scoring formula.
 """
 import logging
 import math
