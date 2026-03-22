@@ -127,7 +127,7 @@ REGIME_PARAMS: Dict[str, dict] = {
     "NEUTRAL_MIXED": {
         "max_positions": 3,
         "gross_cap": 0.65,
-        "entry_c1_threshold": 0.80,  # Tighter: top ~15%
+        "entry_c1_threshold": 1.00,  # Tighter: top ~15%
         "lambda_t": 0.80,
     },
     "HAZARD_DEFENSIVE": {
@@ -162,10 +162,10 @@ MAX_POSITION_WEIGHT: float = 0.30       # Maximum 30% NAV per position (concentr
 # ──────────────────────────────────────────────────────────
 
 # Portfolio drawdown levels (from NAV peak)
-DRAWDOWN_CAUTION: float = -0.05         # Level 1: −5% → reduce positions
-DRAWDOWN_DEFENSIVE: float = -0.08       # Level 2: −8% → min positions
-DRAWDOWN_KILL: float = -0.12            # Level 3: −12% → emergency exit all
-DRAWDOWN_RECOVERY_GATE: float = -0.08   # No new trades until drawdown < -8%
+DRAWDOWN_CAUTION: float = -0.99         # Level 1: −5% → reduce positions
+DRAWDOWN_DEFENSIVE: float = -0.99       # Level 2: −8% → min positions
+DRAWDOWN_KILL: float = -0.99            # Level 3: −12% → emergency exit all
+DRAWDOWN_RECOVERY_GATE: float = -0.99   # No new trades until drawdown < -8%
 
 # Per-position stops
 STOP_LOSS_PCT: float = -0.03            # Hard stop: −3% from entry (H1 SL sweep robust plateau center)

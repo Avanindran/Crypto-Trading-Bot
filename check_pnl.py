@@ -8,7 +8,7 @@ def get_live_nav():
     client = RoostooClient(os.getenv("ROOSTOO_API_KEY"), os.getenv("ROOSTOO_API_SECRET"))
     
     # Roostoo standard hackathon starting balance
-    STARTING_BALANCE = 50000.0 
+    STARTING_BALANCE = 1000000 
     
     try:
         print("Fetching balances and live market prices...")
