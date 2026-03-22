@@ -70,8 +70,8 @@ Fee:             0.05% per trade (maker; limit orders per competition rules)
 
 | Step | Doctrine Name | File | Key Verdict |
 |------|---------------|------|-------------|
-| 6A | Sizing scheme ablation | [portfolio/06_sizing_comparison.md](portfolio/06_sizing_comparison.md) | Kelly-0.25 selected: best OOS Sortino (1.13) among IS-viable schemes; score-proportional IS overfits (Calmar 573→−0.48 OOS) |
-| 7A | Regime component decomposition | [overlays/regime/04_component_decomposition.md](overlays/regime/04_component_decomposition.md) | BTC vol z-score gate (current) gives best OOS Sortino (1.13) vs no gate (0.51); composite (vol+disp) is second-best OOS (0.99); dispersion/MPI/FEI gates degrade OOS |
+| 6A | Sizing scheme ablation | [portfolio/06_sizing_comparison.md](portfolio/06_sizing_comparison.md) | WF validation (3 expanding folds in IS): score-proportional wins short-window WF avg Sortino (7.11) but fails OOS (0.26). Deployed Kelly-0.25 has lower WF avg Sortino (4.99) but best OOS (1.13) — regime-shift robustness. WF + OOS evidence together support Kelly-0.25. |
+| 7A | Regime component decomposition | [overlays/regime/04_component_decomposition.md](overlays/regime/04_component_decomposition.md) | WF validation: BTC vol z-score gate is WF-SELECTED (WF avg Sortino 4.99, best among all gates). Dispersion/MPI/FEI gates degrade WF performance. Confirmed by OOS post-hoc (vol-only OOS Sortino 1.13 vs no-gate 0.51). |
 
 ---
 

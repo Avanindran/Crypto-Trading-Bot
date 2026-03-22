@@ -1,5 +1,5 @@
 # Dual-Engine Regime-Conditional Allocation
-**Generated:** 2026-03-22 16:41 UTC
+**Generated:** 2026-03-22 17:06 UTC
 
 ## Architecture
 
