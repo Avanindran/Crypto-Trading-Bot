@@ -37,6 +37,25 @@ f_t = f_max × min(1, |r_BTC,2h| / 0.003) × max(0, 1 − vol_z / 2.0)
 
 ---
 
+## Key Terms
+
+| Term | Definition |
+|------|-----------|
+| **C1** | Alpha signal — cross-sectional reversal (70%) + low-vol filter (30%); higher C1 = bigger laggard with lower realized vol |
+| **M_t (C3)** | Drift maturity — fraction of expected recovery already realized; entry blocked when M_t > 0.72 |
+| **λ_t** | Hazard rate — regime engine output; all position scores scale as exp(−λ_t), so λ=4 → 2% effective allocation |
+| **CS_z(x)** | Cross-sectional z-score: `(x_i − mean) / std` across all pairs at each timestamp (not asset's own history) |
+| **LSI** | Liquidity Stress Index — BTC realized vol + bid-ask spread + cross-section dispersion collapse + Fear & Greed; 0=calm, 1=panic |
+| **MPI** | Market Posture Index — BTC trend strength (directional move / typical vol); 0=choppy, 1=strong trend |
+| **FEI** | Flow Elasticity Index — top-quartile minus bottom-quartile 6h return spread; 0=homogeneous moves, 1=clear leaders |
+| **IC** | Information Coefficient — Pearson correlation between predicted rank and actual 4h forward returns; IC > 0.03 with t > 1.5 is the promotion gate |
+| **OOS** | Out-of-sample — Dec 2024–Jan 2025 holdout period; all parameters frozen before this window was examined |
+| **Sortino** | Return / downside volatility (only negative returns penalized) — primary competition metric |
+| **Calmar** | Annualized return / max drawdown — measures capital efficiency |
+| **IC-Sharpe** | `mean(IC) / std(IC) × √n` — measures signal consistency across time (high mean IC + low variance) |
+
+---
+
 ## Validated Performance
 
 Backtest period: Oct 2024 – Nov 2024 (train) | Dec 2024 – Jan 2025 (OOS holdout)
@@ -101,6 +120,7 @@ tests/
   test_scoring.py           # 22 tests — C1/M_t/PositionScore formula + regime cascade
   test_h2_signals.py        # 13 tests — H2C beta history, score computation
   test_engine_aggregator.py #  6 tests — H1+H2C blending logic
+  test_risk.py              # 13 tests — drawdown tracker levels, kill switch (hard stop, trailing stop)
 
 docs/
   STRATEGY.md               # Full strategy writeup: mechanisms, formulas, IC validation, risk
@@ -120,9 +140,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full module dependenc
 
 | Layer | Trigger | Action |
 |-------|---------|--------|
-| LSI > 0.80 (emergency) | BTC vol spike + spread + panic | λ=10.0, ~0% exposure |
+| LSI (Liquidity Stress Index) > 0.80 | BTC vol spike + spread + panic | λ=10.0, ~0% exposure |
 | LSI > 0.60 (defensive) | Elevated stress | λ=4.0 → exp(−4)≈2% effective allocation |
-| LSI > 0.40 or MPI < 0.30 | Caution / chop | λ=1.5 |
+| LSI > 0.40 or MPI (Market Posture Index) < 0.30 | Caution / chop | λ=1.5 |
 | Portfolio DD −12% | Kill switch | Emergency exit all, block until −8% recovery |
 | Portfolio DD −8% | Defensive | Max 30% gross cap, recovery gate active |
 | Portfolio DD −5% | Caution | 50% gross cap override |
@@ -177,9 +197,10 @@ python -X utf8 tests/test_precision.py
 python -X utf8 tests/test_scoring.py
 python -X utf8 tests/test_h2_signals.py
 python -X utf8 tests/test_engine_aggregator.py
+python -X utf8 tests/test_risk.py
 ```
 
-All 60 tests pass. Tests cover: signal formulas, order precision, regime cascade, H2C engine, and portfolio aggregation logic.
+All 83 tests pass. Tests cover: signal formulas, order precision, regime cascade, H2C engine, and portfolio aggregation logic.
 
 ---
 

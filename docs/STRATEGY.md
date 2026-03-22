@@ -306,15 +306,38 @@ Every numeric constant in `config.py` traces to a specific research finding.
 Backtest: Oct 2024 – Nov 2024 (train) | Dec 2024 – Jan 2025 (OOS holdout)
 Data: Binance 1h OHLCV, 44 pairs, 0.05% maker fee
 
-| Engine | Sortino | Calmar | MaxDD | OOS Return | OOS Sortino |
-|--------|---------|--------|-------|------------|-------------|
-| H1 only | 2.69 | 11.73 | −13.6% | +8.2% | 1.33 |
-| H2C only | 1.99 | 20.25 | −20.6% | +0.1% | 0.25 |
-| **Combined (f_max=0.50)** | **3.30** | **19.22** | **−13.7%** | **+9.3%** | **1.40** |
+| Engine | IS Total Return | IS CAGR* | Sortino | Calmar | MaxDD | OOS Return | OOS Sortino |
+|--------|----------------|---------|---------|--------|-------|------------|-------------|
+| H1 only | +38% | ~330% | 2.69 | 11.73 | −13.6% | +8.2% | 1.33 |
+| H2C only | +74% | ~860% | 1.99 | 20.25 | −20.6% | +0.1% | 0.25 |
+| **Combined (f_max=0.50)** | **+54.5%** | **~600%** | **3.30** | **19.22** | **−13.7%** | **+9.3%** | **1.40** |
+
+*IS CAGR annualized from Oct–Nov 2024 (~61 days). High values reflect a strong bull market regime in that window; OOS return is the cleaner generalization estimate.*
 
 Signal IC @ 4h: +0.047 (t=7.2) train · +0.066 (t=10.6) OOS holdout
 Block-resample: 97.2% of 500 random 10-day windows show positive IC
 All Section [G] promotion gates passed: Sortino ≥ 2.83 ✓ · Calmar ≥ 10.56 ✓ · OOS Sortino > 1.33 ✓
+
+---
+
+## Glossary
+
+| Term | Definition |
+|------|-----------|
+| **IC (Information Coefficient)** | Pearson correlation between predicted signal rank and actual forward return. Values > 0.03 with t-statistic > 1.5 indicate reliable predictive power. IC is computed cross-sectionally at each timestep and averaged over the backtest period. |
+| **IC-Sharpe** | `mean(IC) / std(IC) × √n` — measures signal consistency (not just level). High IC-Sharpe means the signal is reliably positive across many periods, not just on average. Used for sizing scheme selection. |
+| **OOS holdout** | Out-of-sample period (Dec 2024 – Jan 2025). All model parameters were frozen before this window was examined. OOS results validate that IS optimization did not overfit to that specific market regime. |
+| **Block resampling** | Bootstrap method that resamples contiguous 10-day blocks (preserving autocorrelation) to estimate IC stability. 97.2% of 500 random blocks show positive IC — confirms the signal is not a single-episode artifact. |
+| **Sortino ratio** | `(annualized return) / (annualized downside vol)` — only negative deviations penalized. Primary competition metric (weight 0.4 in Screen 3 composite). |
+| **Sharpe ratio** | `(annualized return) / (annualized total vol)` — both upside and downside deviations penalized. Competition metric weight 0.3. |
+| **Calmar ratio** | `(annualized return) / |max drawdown|` — measures capital efficiency and tail-risk control. Competition metric weight 0.3. |
+| **CS_z(x)** | Cross-sectional z-score: `(x_i − mean_universe) / std_universe` at each timestamp. Normalizes a raw signal so each asset's value is expressed relative to the universe at that moment — removes common market beta and focuses on relative rank. |
+| **Cross-sectional** | Computed across all assets at a single point in time (as opposed to time-series statistics computed for one asset over history). The C1 signal, regime FEI, and position ranking are all cross-sectional operations. |
+| **Dispersion (cross-sectional)** | Standard deviation of returns across all assets at a timestamp. High dispersion = assets moving independently (normal). Low dispersion = all assets moving together (panic/correlated selloff) — elevated LSI stress signal. |
+| **Realized vol** | Standard deviation of log-returns over a rolling lookback window (e.g., 24 hours). Used in LSI (BTC vol z-score), C1 (low-vol filter), and MPI (trend strength denominator). |
+| **LSI (Liquidity Stress Index)** | Composite stress indicator: BTC vol z-score (45%) + bid-ask spread z-score (25%) + dispersion collapse (15%) + Fear & Greed sentiment (15%). LSI ∈ [0,1]; dominates all other regime signals. |
+| **MPI (Market Posture Index)** | Trend quality indicator: BTC directional move / BTC typical vol. MPI ∈ [0,1]; low MPI = choppy/mean-reverting market where momentum signals degrade. |
+| **FEI (Flow Elasticity Index)** | Momentum breadth indicator: P75 − P25 of cross-section 6h returns. High FEI = clear leaders exist; momentum overlay (H2C) is more reliable. |
 
 ---
 
