@@ -1,5 +1,5 @@
 # H2C BTC Lead-Lag — Mechanism-Specific Backtest
-**Generated:** 2026-03-18 08:53 UTC
+**Generated:** 2026-03-22 16:41 UTC
 
 ## Signal Formula
 

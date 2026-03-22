@@ -68,6 +68,11 @@ Fee:             0.05% per trade (maker; limit orders per competition rules)
 
 **Backtest update (2026-03-18):** H1 SL=−3% (robust plateau center), score-proportional sizing deployed. H2C standalone Sortino=1.99/Calmar=20.25. Continuous allocation (Section [G]): f_max=0.50 → Sortino=3.30/Calmar=19.22/OOS Sortino=1.40 — ALL GATES PASSED.
 
+| Step | Doctrine Name | File | Key Verdict |
+|------|---------------|------|-------------|
+| 6A | Sizing scheme ablation | [portfolio/06_sizing_comparison.md](portfolio/06_sizing_comparison.md) | Kelly-0.25 selected: best OOS Sortino (1.13) among IS-viable schemes; score-proportional IS overfits (Calmar 573→−0.48 OOS) |
+| 7A | Regime component decomposition | [overlays/regime/04_component_decomposition.md](overlays/regime/04_component_decomposition.md) | BTC vol z-score gate (current) gives best OOS Sortino (1.13) vs no gate (0.51); composite (vol+disp) is second-best OOS (0.99); dispersion/MPI/FEI gates degrade OOS |
+
 ---
 
 **Supplementary (not part of pipeline narrative):**
