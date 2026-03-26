@@ -78,8 +78,8 @@ def run() -> None:
     setup_logging()
     load_dotenv()
 
-    api_key = os.getenv("ROOSTOO_API_KEY", "")
-    api_secret = os.getenv("ROOSTOO_API_SECRET", "")
+    api_key = os.getenv("ROOSTOO_TEST_KEY", "")
+    api_secret = os.getenv("ROOSTOO_TEST_SECRET", "")
     if not api_key or not api_secret:
         raise RuntimeError("ROOSTOO_API_KEY and ROOSTOO_API_SECRET must be set in .env")
 
@@ -147,6 +147,18 @@ def run() -> None:
                 constraints.record_entry(pair, entry_price, qty)
             else:
                 logger.warning("Cannot track position %s - no current price available", pair)
+
+    # ── Handle Negative USD Cash (Auto-Debt Clearing) ──────────────────────────
+    if usd_free < 0:
+        logger.warning("Negative USD balance detected: $%.2f. Initiating emergency debt clearing.", usd_free)
+        _handle_negative_usd(client, exchange_info, constraints, real_positions, current_prices, usd_free, usd_locked)
+        # Re-fetch balances after emergency sell
+        try:
+            wallet = client.get_balance()
+            usd_free = float(wallet.get("USD", {}).get("Free", usd_free))
+            usd_locked = float(wallet.get("USD", {}).get("Freeze", usd_locked))
+        except Exception as exc:
+            logger.error("Failed to refresh USD balance after debt clearing: %s", exc)
 
     # ── Get tradable pairs from exchange info ─────────────────────────────────
     tradable_pairs = list(exchange_info.get("TradePairs", {}).keys())
@@ -535,6 +547,130 @@ def _persist_and_sleep(constraints: ConstraintEngine, loop_start: float, drawdow
     state_module.save_state_with_drawdown({"constraints": constraints.to_dict()}, drawdown_tracker)
     elapsed = time.time() - loop_start
     time.sleep(max(0.0, config.LOOP_INTERVAL_SECONDS - elapsed))
+
+
+def _handle_negative_usd(
+    client: RoostooClient,
+    exchange_info: Dict[str, Any],
+    constraints: ConstraintEngine,
+    real_positions: Dict[str, float],
+    current_prices: Dict[str, float],
+    usd_free: float,
+    usd_locked: float,
+) -> None:
+    """
+    Emergency debt clearing routine for negative USD balance.
+    
+    When USD balance is negative due to Roostoo's fee structure, we need to:
+    1. Find the largest position by USD value
+    2. Market-sell enough to cover the negative balance + 5% buffer
+    3. Ensure order quantity is floored to exchange precision
+    4. Update internal state to reflect the emergency sell
+    """
+    if not real_positions:
+        logger.error("Negative USD but no positions to liquidate - cannot clear debt")
+        return
+    
+    # Calculate debt amount with 5% buffer
+    debt_amount = abs(usd_free)
+    target_sell_usd = debt_amount * 1.05  # 5% buffer
+    
+    logger.info("Emergency debt clearing: debt=$%.2f, target sell=$%.2f", debt_amount, target_sell_usd)
+    
+    # Find the largest position by USD value
+    max_value = 0.0
+    largest_pair = None
+    largest_qty = 0.0
+    largest_price = 0.0
+    
+    for pair, qty in real_positions.items():
+        price = current_prices.get(pair, 0.0)
+        if price > 0:
+            value = qty * price
+            if value > max_value:
+                max_value = value
+                largest_pair = pair
+                largest_qty = qty
+                largest_price = price
+    
+    if not largest_pair:
+        logger.error("Could not find any positions with valid prices for emergency liquidation")
+        return
+    
+    logger.info("Largest position: %s qty=%.6f price=$%.2f value=$%.2f", 
+                largest_pair, largest_qty, largest_price, max_value)
+    
+    # Calculate how much to sell
+    sell_qty = target_sell_usd / largest_price
+    
+    # Apply exchange precision rules
+    pair_info = exchange_info.get("TradePairs", {}).get(largest_pair)
+    if not pair_info:
+        logger.error("Exchange info not found for pair %s", largest_pair)
+        return
+    
+    # Floor to exchange precision
+    import math
+    precision = pair_info["AmountPrecision"]
+    factor = 10 ** precision
+    sell_qty = math.floor(sell_qty * factor) / factor
+    
+    # Ensure we don't sell more than we have
+    sell_qty = min(sell_qty, largest_qty)
+    
+    if sell_qty <= 0:
+        logger.error("Calculated sell quantity is zero or negative for %s", largest_pair)
+        return
+    
+    sell_value = sell_qty * largest_price
+    logger.info("Emergency sell: %s qty=%.6f @ $%.2f total=$%.2f", 
+                largest_pair, sell_qty, largest_price, sell_value)
+    
+    # Execute market sell
+    try:
+        result = client.place_order(
+            pair=largest_pair,
+            side="SELL",
+            quantity=sell_qty,
+            price=None  # Market order
+        )
+        
+        if result.get("Success", False):
+            logger.info("Emergency sell executed successfully: %s", result.get("OrderId", "unknown"))
+            
+            # Update internal state
+            # Reduce the position quantity in our tracking
+            current_record = constraints.get_position_record(largest_pair)
+            if current_record:
+                new_qty = current_record.qty - sell_qty
+                if new_qty <= 0:
+                    # Position fully liquidated
+                    constraints.record_exit(largest_pair)
+                    logger.info("Position %s fully liquidated during debt clearing", largest_pair)
+                else:
+                    # Partial liquidation - update quantity
+                    # Note: We keep the original entry price for stop calculations
+                    # but update the quantity
+                    constraints.record_exit(largest_pair)  # Remove old record
+                    constraints.record_entry(largest_pair, current_record.entry_price, new_qty)
+                    logger.info("Position %s partially liquidated, new qty=%.6f", largest_pair, new_qty)
+            else:
+                # No internal record exists, but we know we have this position from real_positions
+                # This can happen if the position was found during reconciliation but not tracked internally
+                # We need to create a record with current price as entry price (approximation)
+                current_price = current_prices.get(largest_pair, largest_price)
+                new_qty = largest_qty - sell_qty
+                if new_qty > 0:
+                    constraints.record_entry(largest_pair, current_price, new_qty)
+                    logger.info("Created internal record for %s after debt clearing, qty=%.6f", largest_pair, new_qty)
+                else:
+                    logger.info("Position %s fully liquidated during debt clearing", largest_pair)
+                
+        else:
+            logger.error("Emergency sell failed: %s", result)
+            
+    except Exception as exc:
+        logger.error("Exception during emergency sell: %s", exc)
 
 
 def _persist_and_log(
