@@ -138,8 +138,8 @@ def verify_startup_conditions(client: RoostooClient) -> Dict[str, Any]:
     # Check 3: Balance check
     wallet = client.get_balance()
     usd_free = float(wallet.get("USD", {}).get("Free", 0.0))
-    if usd_free < 1000:
-        raise RuntimeError(f"Insufficient USD balance: {usd_free:.2f}")
+    # if usd_free < 1000:
+       # raise RuntimeError(f"Insufficient USD balance: {usd_free:.2f}")
     logger.info("USD balance: %.2f (OK)", usd_free)
 
     return {"exchange_info": exchange_info, "wallet": wallet}

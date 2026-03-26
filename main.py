@@ -78,8 +78,8 @@ def run() -> None:
     setup_logging()
     load_dotenv()
 
-    api_key = os.getenv("ROOSTOO_TEST_KEY", "")
-    api_secret = os.getenv("ROOSTOO_TEST_SECRET", "")
+    api_key = os.getenv("ROOSTOO_API_KEY", "")
+    api_secret = os.getenv("ROOSTOO_API_SECRET", "")
     if not api_key or not api_secret:
         raise RuntimeError("ROOSTOO_API_KEY and ROOSTOO_API_SECRET must be set in .env")
 
