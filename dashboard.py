@@ -164,7 +164,7 @@ def run_dashboard():
                     # Convert milliseconds to seconds if necessary
                     if raw_ts > 1e11:
                         raw_ts /= 1000
-                    time_str = datetime.fromtimestamp(raw_ts).strftime('%H:%M:%S') if raw_ts > 0 else "--:--:--"
+                    time_str = datetime.fromtimestamp(raw_ts).strftime('%Y-%m-%d %H:%M:%S') if raw_ts > 0 else "----/--/-- --:--:--"
                     
                     if side == "BUY":
                         print(f"\033[92m[BUY]\033[0m  {time_str} | {pair:<10} {qty:<12.4f} @ ${price:.4f} \033[90m(Cost: ${cost:,.2f})\033[0m")

@@ -162,10 +162,10 @@ MAX_POSITION_WEIGHT: float = 0.30       # Maximum 30% NAV per position (concentr
 # ──────────────────────────────────────────────────────────
 
 # Portfolio drawdown levels (from NAV peak)
-DRAWDOWN_CAUTION: float = -0.99         # Level 1: −5% → reduce positions
-DRAWDOWN_DEFENSIVE: float = -0.99       # Level 2: −8% → min positions
-DRAWDOWN_KILL: float = -0.99            # Level 3: −12% → emergency exit all
-DRAWDOWN_RECOVERY_GATE: float = -0.99   # No new trades until drawdown < -8%
+DRAWDOWN_CAUTION: float = -9.99        # Level 1: −5% → reduce positions
+DRAWDOWN_DEFENSIVE: float = -9.99       # Level 2: −8% → min positions
+DRAWDOWN_KILL: float = -9.99            # Level 3: −12% → emergency exit all
+DRAWDOWN_RECOVERY_GATE: float = -9.99   # No new trades until drawdown < -8%
 
 # Per-position stops
 STOP_LOSS_PCT: float = -0.03            # Hard stop: −3% from entry (H1 SL sweep robust plateau center)
